@@ -1,0 +1,2648 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ferretería — Stock, Pedidos y Proveedores</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --bg: #eceae4;
+    --panel: #ffffff;
+    --ink: #23262b;
+    --ink-soft: #63676e;
+    --line: #d8d5cc;
+    --accent: #cf4f0e;
+    --accent-ink: #ffffff;
+    --accent2: #2c5f7c;
+    --good: #3f7a52;
+    --good-bg: #e6f0e8;
+    --warn: #a8710a;
+    --warn-bg: #fbecd0;
+    --danger: #b3261e;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(35,38,43,0.06), 0 4px 14px rgba(35,38,43,0.05);
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+    min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+  .mono{ font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; }
+  header.app-header{
+    background:var(--ink);
+    color:#fff;
+    padding:12px 20px 0 20px;
+    position:sticky; top:0; z-index:30;
+  }
+  .stats-mini{ display:flex; gap:18px; font-size:12.5px; color:#c9cbce; padding-bottom:12px; flex-wrap:wrap; }
+  .stats-mini b{ color:#fff; font-weight:700; }
+  nav.tabs{ display:flex; gap:4px; margin-top:14px; overflow-x:auto; }
+  nav.tabs button{
+    flex:1;
+    background:transparent;
+    border:none;
+    color:#b9bbbf;
+    padding:12px 8px 14px 8px;
+    font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+    font-weight:700;
+    font-size:16px;
+    letter-spacing:0.03em;
+    text-transform:uppercase;
+    cursor:pointer;
+    border-bottom:3px solid transparent;
+    transition:color .15s, border-color .15s;
+    white-space:nowrap;
+  }
+  nav.tabs button:hover{ color:#fff; }
+  nav.tabs button.active{ color:#fff; border-bottom-color:var(--accent); }
+
+  main{ max-width:1440px; margin:0 auto; padding:20px 16px 80px 16px; }
+
+  .toolbar{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px; }
+  .toolbar input[type="text"], .toolbar select{
+    padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+    background:var(--panel); font-size:14px; font-family:inherit; color:var(--ink);
+  }
+  .toolbar input[type="text"]{ flex:1; min-width:160px; }
+  .toolbar select{ width:220px; flex-shrink:0; }
+  .spacer{ flex:1; }
+  .search-wrap{ flex:1; min-width:200px; display:flex; align-items:center; gap:6px; }
+  .search-wrap input[type="text"]{ flex:1; min-width:0; }
+  .search-wrap .icon-btn{ width:26px; height:26px; font-size:13px; flex-shrink:0; }
+
+  .stock-layout{ display:flex; gap:16px; align-items:flex-start; width:100%; }
+  .stock-main{ flex:1 1 0%; min-width:0; }
+  .table-scroll{ overflow:auto; max-width:100%; max-height:58vh; border-radius:var(--radius); }
+  .price-detail{
+    width:220px; flex-shrink:0; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:16px; box-shadow:var(--shadow);
+  }
+  .pd-title{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-weight:700; font-size:17px; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pd-price-big{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-weight:800; font-size:46px; color:var(--accent); margin-bottom:12px; line-height:1; }
+  .pd-breakdown{ margin-top:12px; }
+  .pd-row{ display:flex; justify-content:space-between; gap:10px; padding:7px 0; border-bottom:1px dashed var(--line); font-size:13.5px; }
+  .pd-row:last-child{ border-bottom:none; }
+  .pd-row.total{ font-weight:700; border-bottom:1px solid var(--line); }
+  .pd-empty{ color:var(--ink-soft); font-size:13.5px; text-align:center; padding:30px 6px; }
+  @media (max-width:800px){
+    .stock-layout{ flex-direction:column; }
+    .price-detail{ width:100%; }
+  }
+
+  button.btn, a.btn, label.btn{
+    background:var(--accent); color:var(--accent-ink); border:none; border-radius:8px;
+    padding:10px 16px; font-weight:700; font-size:14px; cursor:pointer; font-family:inherit;
+    white-space:nowrap; display:inline-block; text-decoration:none; box-sizing:border-box;
+  }
+  button.btn:hover, a.btn:hover, label.btn:hover{ filter:brightness(1.06); }
+  button.btn:disabled{ opacity:0.45; cursor:not-allowed; }
+  button.btn.secondary, a.btn.secondary, label.btn.secondary{ background:var(--panel); color:var(--ink); border:1px solid var(--line); }
+  button.btn.ghost, a.btn.ghost{ background:transparent; color:var(--accent2); border:1px solid transparent; padding:8px 10px; }
+  button.btn.danger, a.btn.danger{ background:transparent; color:var(--danger); border:1px solid #e3b7b3; }
+  a.btn-whatsapp{ background:#25D366; color:#fff; }
+  a.btn-whatsapp:hover{ filter:brightness(1.05); }
+  button.btn-mail-celeste, a.btn-mail-celeste{ background:#1a73e8; color:#fff; }
+  button.btn-mail-celeste:hover, a.btn-mail-celeste:hover{ filter:brightness(1.05); }
+  button.btn-yellow{ background:#f0c419; color:#3a2e00; }
+  button.btn-yellow:hover{ filter:brightness(1.05); }
+  button.btn.small, a.btn.small{ padding:6px 10px; font-size:13px; }
+  button.icon-btn{
+    width:27px; height:27px; border-radius:7px; border:1px solid var(--line); background:#fff;
+    cursor:pointer; font-size:13.5px; line-height:1; display:inline-flex; align-items:center; justify-content:center;
+  }
+  button.icon-btn:hover{ background:#f2f0ea; }
+  button.icon-btn.small{ width:22px; height:22px; font-size:12px; }
+  #refreshBtn{ transition:transform .4s ease; }
+
+  .dash-toggle{
+    display:inline-block; font-size:12.5px; font-weight:700; color:var(--ink-soft); cursor:pointer;
+    padding:6px 2px; user-select:none;
+  }
+  .dash-toggle:hover{ color:var(--ink); }
+  .dash{ display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:10px; margin:6px 0 18px 0; }
+  .dash .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    padding:14px 16px; box-shadow:var(--shadow);
+  }
+  .dash .card .num{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-size:28px; font-weight:800; }
+  .dash .card .lbl{ font-size:12.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.03em; }
+  .dash .card.warn .num{ color:var(--warn); }
+
+  table{ width:100%; border-collapse:collapse; background:var(--panel); border-radius:var(--radius); box-shadow:var(--shadow); }
+  table.resizable{ table-layout:fixed; overflow:visible; }
+  thead th{
+    text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft);
+    padding:8px 12px; border-bottom:1px solid var(--line); font-weight:700;
+    position:sticky; top:0; background:var(--panel); z-index:2;
+  }
+  th.th-sort{ cursor:pointer; user-select:none; transition:background .1s ease, color .1s ease; }
+  th.th-sort:hover{ background:var(--bg); color:#1a73e8; }
+  tbody tr{ height:38px; }
+  tbody td{ padding:6px 10px; border-bottom:1px solid #eeece5; font-size:12.5px; vertical-align:middle; overflow:hidden; }
+  .cell-trunc{ white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-transform:uppercase; }
+  .cell-wrap{ white-space:nowrap; overflow:visible; text-transform:uppercase; }
+  .col-resizer{
+    position:absolute; right:0; top:0; width:7px; height:100%; cursor:col-resize; z-index:5; user-select:none;
+  }
+  .col-resizer::after{
+    content:""; position:absolute; right:2px; top:15%; width:2px; height:70%; background:var(--line); border-radius:1px;
+  }
+  .col-resizer:hover::after{ background:var(--accent); width:3px; }
+  tbody tr:last-child td{ border-bottom:none; }
+  table.resizable tbody tr:nth-child(odd){ background:#eaf4f8; }
+  table.resizable tbody tr:nth-child(even){ background:#ffffff; }
+  tbody tr:hover{ background:#faf9f5; }
+  table.resizable tbody tr:hover{ background:#f7ecd9; }
+  .prod-name{ font-weight:600; }
+  .prod-cat{ font-size:12px; color:var(--ink-soft); }
+  .badge{ display:inline-block; padding:3px 9px; border-radius:20px; font-size:12px; font-weight:700; }
+  .badge.good{ background:var(--good-bg); color:var(--good); }
+  .badge.warn{ background:var(--warn-bg); color:var(--warn); }
+  .badge.new{ background:#e8eef5; color:var(--accent2); }
+  .badge.sent{ background:#e8eef5; color:var(--accent2); }
+  .stock-adjust{ display:flex; align-items:center; gap:3px; flex-wrap:nowrap; }
+  .stock-adjust input{
+    width:38px; text-align:center; padding:5px 2px; border:1px solid var(--line); border-radius:6px;
+    font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; font-weight:600; font-size:12px;
+  }
+  .price{ font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; font-weight:600; }
+  .row-actions{ display:flex; gap:6px; justify-content:flex-end; flex-wrap:nowrap; }
+
+  .empty{
+    text-align:center; padding:60px 20px; color:var(--ink-soft); background:var(--panel);
+    border-radius:var(--radius); border:1px dashed var(--line);
+  }
+  .empty .big{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-size:22px; color:var(--ink); font-weight:700; margin-bottom:6px; }
+
+  /* Modal */
+  .overlay{
+    position:fixed; inset:0; background:rgba(35,38,43,0.5); display:flex; align-items:flex-start;
+    justify-content:center; padding:30px 14px; z-index:100; overflow-y:auto;
+  }
+  .modal{
+    background:var(--panel); border-radius:12px; width:100%; max-width:480px; padding:22px;
+    box-shadow:0 20px 50px rgba(0,0,0,0.25);
+  }
+  .modal.wide{ max-width:960px; }
+  .field-row-import{ display:flex; gap:8px; flex-wrap:nowrap; overflow-x:auto; padding-bottom:2px; }
+  .import-layout{ display:flex; gap:20px; align-items:flex-start; }
+  .import-col-left{ flex:1.3; min-width:0; }
+  .import-col-right{ width:260px; flex-shrink:0; }
+  .import-col-right .field{ margin-bottom:10px; }
+  @media (max-width:720px){
+    .import-layout{ flex-direction:column; }
+    .import-col-right{ width:100%; }
+  }
+  .field-row-import .field{ flex:1; min-width:95px; }
+  .modal h3{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-size:22px; margin:0 0 4px 0; text-transform:uppercase; letter-spacing:0.02em; }
+  .modal .subtitle{ font-size:13px; color:var(--ink-soft); margin-bottom:16px; }
+  .field{ margin-bottom:12px; }
+  .field label{ display:block; font-size:12.5px; font-weight:600; color:var(--ink-soft); margin-bottom:5px; }
+  .field input, .field select, .field textarea{
+    width:100%; padding:10px 11px; border:1px solid var(--line); border-radius:8px; font-family:inherit; font-size:14.5px;
+  }
+  .field-row{ display:flex; gap:10px; flex-wrap:wrap; }
+  .field-row .field{ flex:1; min-width:120px; }
+  .modal-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:18px; flex-wrap:wrap; }
+  .checkbox-field{ display:flex; align-items:center; gap:8px; margin-bottom:14px; font-size:14px; }
+  .checkbox-field input{ width:auto; }
+  .step-label{ font-size:11.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:var(--accent2); margin:16px 0 8px 0; }
+  .step-label:first-child{ margin-top:0; }
+
+  /* Pedidos */
+  .pedido-card{ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); margin-bottom:12px; box-shadow:var(--shadow); overflow:hidden; }
+  .pedido-head{ display:flex; align-items:center; gap:12px; padding:14px 16px; cursor:pointer; flex-wrap:wrap; }
+  .pedido-head .prov{ font-weight:700; font-size:15.5px; }
+  .pedido-head .meta{ font-size:12.5px; color:var(--ink-soft); }
+  .pedido-body{ padding:0 16px 16px 16px; border-top:1px solid #eeece5; }
+  .pedido-body table{ box-shadow:none; }
+  .pedido-body tbody tr{ height:26px; }
+  .pedido-body tbody td{ padding:2px 8px; font-size:12px; }
+  .pedido-body thead th{ padding:5px 8px; font-size:11px; }
+  .pedido-body tbody td input[type="number"]{ padding:2px 6px !important; font-size:12px; }
+  .item-row-add{ display:flex; gap:8px; align-items:flex-end; margin-bottom:10px; flex-wrap:wrap; }
+  .item-row-add .field{ margin-bottom:0; }
+  .pedido-items-list{ list-style:none; padding:0; margin:0 0 12px 0; }
+  .pedido-items-list li{ display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--line); font-size:14px; }
+  .pedido-items-list li:last-child{ border-bottom:none; }
+
+  /* Proveedores */
+  .global-pct-row{ display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap; align-items:center; }
+  .global-pct-box{ background:#e3f2fa; border:1px solid #a9d7ec; border-radius:10px; padding:9px 16px; }
+  .global-pct-box label{ display:block; font-size:10.5px; text-transform:uppercase; letter-spacing:0.04em; color:#1d6a8c; font-weight:700; margin-bottom:3px; }
+  .global-pct-note{ font-size:12px; color:var(--ink-soft); flex:1; min-width:200px; }
+
+  /* Métricas */
+  .metric-card{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:14px 18px;
+    margin-bottom:12px; box-shadow:var(--shadow);
+  }
+  .metric-card-tight{ padding:9px 14px; margin-bottom:7px; }
+  .metric-card-tight .metric-name{ font-size:15px; }
+  .metric-card-tight .metric-comprado{ font-size:13.5px; }
+  .metric-head{ display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .metric-name{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-weight:700; font-size:19px; text-transform:uppercase; letter-spacing:0.02em; }
+  .metric-comprado{ font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; font-weight:600; font-size:16px; color:var(--accent); }
+  .metric-bar-wrap{ background:var(--bg); border-radius:6px; height:6px; margin:8px 0 12px 0; overflow:hidden; }
+  .metric-bar{ background:var(--accent); height:100%; border-radius:6px; }
+  .metric-stats{ display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); gap:8px 18px; }
+  .metric-stat{ display:flex; justify-content:space-between; gap:8px; font-size:13px; padding:4px 0; border-bottom:1px dashed var(--line); }
+  .metric-stat:last-child{ border-bottom:none; }
+  .metric-stat-lbl{ color:var(--ink-soft); }
+  .metric-stat-val{ font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; font-weight:600; text-align:right; }
+  .prov-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:start; }
+  @media (max-width:800px){ .prov-grid{ grid-template-columns:1fr; } }
+  .prov-card{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:11px 16px;
+    box-shadow:var(--shadow); min-width:0;
+  }
+  .prov-card-head{ cursor:pointer; user-select:none; }
+  .prov-card-head:hover .name{ color:#1a73e8; }
+  .prov-info .name{ font-weight:700; font-size:15px; margin-bottom:2px; }
+  .prov-info .meta{ font-size:11.5px; color:var(--ink-soft); }
+  .prov-card-head .name{ font-weight:700; font-size:15px; margin-bottom:2px; }
+  .prov-card-head .meta{ font-size:11.5px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .prov-pct{ display:flex; gap:16px; margin:4px 0; }
+  .prov-pct-edit{ display:flex; gap:20px; flex-wrap:wrap; margin:5px 0; }
+  .pct-group label{ display:block; font-size:10.5px; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-soft); font-weight:700; margin-bottom:2px; }
+  .pct-inputs{ display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+  .pct-item{ display:flex; align-items:center; gap:2px; }
+  .pct-item input{
+    width:48px; padding:3px 4px; border:1px solid var(--line); border-radius:6px; text-align:center;
+    font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; font-weight:600; font-size:12.5px;
+  }
+  .pct-plus{ color:var(--ink-soft); font-weight:700; margin:0 2px; }
+  .prov-pct .pct{ font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; font-size:13.5px; }
+  .prov-pct .pct b{ color:var(--accent); }
+  .preview-wrap{ max-height:320px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; margin-bottom:14px; }
+  .file-grid-wrap{ overflow-x:auto; overflow-y:hidden; border:1px solid var(--line); border-radius:8px; margin-bottom:14px; }
+  .file-grid{ box-shadow:none; }
+  .file-grid th, .file-grid td{ padding:3px 7px; font-size:11px; white-space:nowrap; }
+  .preview-wrap table{ box-shadow:none; }
+  .preview-wrap thead th{ position:sticky; top:0; background:#fff; }
+
+  .toast{
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+    background:var(--ink); color:#fff; padding:11px 18px; border-radius:8px; font-size:14px;
+    box-shadow:0 8px 24px rgba(0,0,0,0.25); opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; z-index:200;
+    max-width:90vw; text-align:center;
+  }
+  .toast.show{ opacity:1; transform:translateX(-50%) translateY(-6px); }
+
+  @media (max-width:600px){
+    .brand{ font-size:22px; }
+    nav.tabs button{ font-size:13.5px; padding:10px 4px 12px 4px; }
+    thead{ display:none; }
+    table, tbody, tr, td{ display:block; width:100%; }
+    tbody tr{ border-bottom:1px solid var(--line); padding:10px 12px; }
+    tbody td{ border:none; padding:4px 0; display:flex; justify-content:space-between; align-items:center; }
+    tbody td::before{ content:attr(data-label); font-size:11px; color:var(--ink-soft); text-transform:uppercase; font-weight:700; }
+    .row-actions{ justify-content:flex-start; margin-top:6px; }
+    .preview-wrap thead{ display:table-header-group; }
+    .preview-wrap table, .preview-wrap tbody, .preview-wrap tr, .preview-wrap td{ display:table-cell; width:auto; }
+    .preview-wrap tr{ display:table-row; }
+    .file-grid-wrap thead{ display:table-header-group; }
+    .file-grid-wrap table, .file-grid-wrap tbody, .file-grid-wrap tr, .file-grid-wrap td{ display:table-cell; width:auto; }
+    .file-grid-wrap tr{ display:table-row; }
+  }
+
+  @media print{
+    header.app-header, .toolbar, .row-actions, .dash, .btn{ display:none !important; }
+    body{ background:#fff; }
+  }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <div style="display:flex; align-items:center; gap:8px;">
+    <nav class="tabs" style="flex:1;">
+      <button data-tab="stock" class="active">Stock</button>
+      <button data-tab="pedidos">Pedidos</button>
+      <button data-tab="proveedores">Proveedores</button>
+      <button data-tab="metricas">Métricas</button>
+      <button data-tab="cuentas">Cuentas corrientes</button>
+    </nav>
+    <button class="icon-btn" id="refreshBtn" title="Traer los últimos datos guardados" onclick="manualRefresh()" style="margin-bottom:8px; background:transparent; border-color:#565a60; color:#fff;">⟳</button>
+    <button class="icon-btn" id="settingsBtn" title="Configuración" onclick="openConfiguracionModal()" style="margin-bottom:8px; background:transparent; border-color:#565a60; color:#fff;">⚙</button>
+  </div>
+</header>
+
+<main id="main"></main>
+
+<div id="modalRoot"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------------- Estado ---------------- */
+let productos = [];
+let pedidos = [];
+let proveedores = [];
+let cuentasMovimientos = [];
+let currentTab = 'stock';
+let searchStock = '';
+let stockSortColumn = null;
+let stockSortDir = 'asc';
+let filterCat = '';
+let selectedProductId = null;
+let detalleExpandido = false;
+let dashExpandido = false;
+function toggleDash(){ dashExpandido = !dashExpandido; render(); }
+let openPedidoIds = new Set();
+let proveedoresExpandidos = new Set();
+let globalPctVisible = false;
+let metricasResumenVisible = false;
+let cuentasResumenVisible = false;
+let metricasSortBy = 'comprado';
+const PRODUCTO_MAX_WIDTH = 420;
+let colWidths = { pedidoEstado:36, codigo:85, rubro:70, um:55, producto:420, costo:95, proveedor:95, stock:72, acciones:110 };
+let globalPctTarjeta = 0;
+let globalPctIva = 0;
+let configStockBajoDefault = 0;
+let configRedondeoStep = 1;
+let configWhatsappModo = 'web'; // 'web' = WhatsApp Web, 'escritorio' = app de escritorio
+
+/* ---------------- Almacenamiento persistente (Firebase Realtime Database) ---------------- */
+const FIREBASE_URL = 'https://datos-ferreteria-default-rtdb.firebaseio.com';
+
+async function fbGet(key){
+  const res = await fetch(`${FIREBASE_URL}/${key}.json`);
+  if(!res.ok) throw new Error('Firebase GET falló: ' + res.status);
+  return await res.json();
+}
+async function fbSet(key, value){
+  const res = await fetch(`${FIREBASE_URL}/${key}.json`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(value)
+  });
+  if(!res.ok) throw new Error('Firebase PUT falló: ' + res.status);
+}
+
+async function loadAll(){
+  try{ const v = await fbGet('productos'); productos = Array.isArray(v) ? v : []; }catch(e){ productos = []; }
+  try{ const v = await fbGet('pedidos'); pedidos = Array.isArray(v) ? v : []; }catch(e){ pedidos = []; }
+  try{ const v = await fbGet('proveedores'); proveedores = Array.isArray(v) ? v : []; }catch(e){ proveedores = []; }
+  try{ const v = await fbGet('cuentasMovimientos'); cuentasMovimientos = Array.isArray(v) ? v : []; }catch(e){ cuentasMovimientos = []; }
+  try{ const v = await fbGet('colWidths'); if(v) Object.assign(colWidths, v); }catch(e){ /* usa los valores por defecto */ }
+  if(colWidths.producto > PRODUCTO_MAX_WIDTH) colWidths.producto = PRODUCTO_MAX_WIDTH;
+  try{ const v = await fbGet('globalPct'); if(v){ globalPctTarjeta = Number(v.tarjeta)||0; globalPctIva = Number(v.iva)||0; } }catch(e){ /* usa 0 por defecto */ }
+  try{ const v = await fbGet('configuracion'); if(v){ configStockBajoDefault = Number(v.stockBajoDefault)||0; configRedondeoStep = Number(v.redondeoStep)||1; configWhatsappModo = v.whatsappModo === 'escritorio' ? 'escritorio' : 'web'; } }catch(e){ /* usa los valores por defecto */ }
+  render();
+}
+async function manualRefresh(){
+  const btn = document.getElementById('refreshBtn');
+  if(btn) btn.style.transform = 'rotate(360deg)';
+  await loadAll();
+  showToast('Datos actualizados');
+}
+async function saveProductos(){
+  try{ await fbSet('productos', productos); }
+  catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
+}
+async function savePedidos(){
+  try{ await fbSet('pedidos', pedidos); }
+  catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
+}
+async function saveProveedores(){
+  try{ await fbSet('proveedores', proveedores); }
+  catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
+}
+async function saveCuentas(){
+  try{ await fbSet('cuentasMovimientos', cuentasMovimientos); }
+  catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
+}
+async function saveColWidths(){
+  try{ await fbSet('colWidths', colWidths); }
+  catch(e){ /* no molestamos con un toast por esto */ }
+}
+async function saveGlobalPct(){
+  try{ await fbSet('globalPct', {tarjeta:globalPctTarjeta, iva:globalPctIva}); }
+  catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
+}
+async function saveConfiguracion(){
+  try{ await fbSet('configuracion', {stockBajoDefault:configStockBajoDefault, redondeoStep:configRedondeoStep, whatsappModo:configWhatsappModo}); }
+  catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
+}
+
+function actualizarListasGmail(){
+  showToast('Esta función va a buscar listas nuevas en Gmail automáticamente en cuanto esté disponible. Por ahora, usá "Importar lista" en cada proveedor.');
+}
+
+async function volverListaAnteriorProveedor(prId){
+  const pr = proveedores.find(x=>x.id===prId);
+  if(!pr) return;
+  if(!confirm(`¿Volver a la lista de precios anterior de "${pr.nombre}"? Esto reemplaza sus productos actuales por como estaban antes de la última importación de este proveedor. No afecta a los demás proveedores.`)) return;
+
+  let backups = {};
+  try{ backups = (await fbGet('backupsPorProveedor')) || {}; }catch(e){}
+  const backup = backups[prId];
+  if(!backup){
+    showToast('Todavía no hay una actualización anterior guardada para este proveedor.');
+    return;
+  }
+
+  // Guardamos el estado actual de este proveedor como el nuevo "anterior",
+  // para poder ir y volver tocando el botón de nuevo.
+  const productosActuales = productos.filter(p => p.proveedorId === prId).map(p => ({...p}));
+  const proveedorActual = { ...pr };
+
+  productos = productos.filter(p => p.proveedorId !== prId);
+  productos.push(...(backup.productos || []));
+  if(backup.proveedor) Object.assign(pr, backup.proveedor);
+
+  backups[prId] = { productos: productosActuales, proveedor: proveedorActual };
+  try{ await fbSet('backupsPorProveedor', backups); }catch(e){}
+
+  await saveProductos();
+  await saveProveedores();
+  render();
+  showToast(`Se volvió a la lista anterior de ${pr.nombre}`);
+}
+
+function showToast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(()=> t.classList.remove('show'), 2600);
+}
+
+function uid(){ return 'id_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7); }
+function money(n, decimales){
+  n = Number(n)||0;
+  if(decimales !== undefined){
+    return '$' + n.toLocaleString('es-AR', {minimumFractionDigits:decimales, maximumFractionDigits:decimales});
+  }
+  return '$' + n.toLocaleString('es-AR', {minimumFractionDigits:0, maximumFractionDigits:2});
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function today(){ return new Date().toISOString().slice(0,10); }
+
+function categorias(){
+  return [...new Set(productos.map(p=>p.categoria).filter(Boolean))].sort();
+}
+
+/* Parsea precios en formato argentino ("1.250,50", "1250,50", "1250.50", "$ 1250") */
+function parsePrecioAR(raw){
+  if(raw == null) return NaN;
+  let s = String(raw).trim().replace(/\$/g,'').replace(/\s/g,'');
+  if(s === '') return NaN;
+  const hasComma = s.includes(',');
+  const hasDot = s.includes('.');
+  if(hasComma && hasDot){
+    s = s.replace(/\./g,'').replace(',', '.');
+  }else if(hasComma){
+    s = s.replace(',', '.');
+  }else if(hasDot){
+    const parts = s.split('.');
+    const last = parts[parts.length-1];
+    if(parts.length > 2 || last.length === 3){
+      s = parts.join('');
+    }
+  }
+  const n = Number(s);
+  return isNaN(n) ? NaN : n;
+}
+
+/* ---- Descuentos y ganancias múltiples (en cascada) por proveedor ---- */
+function getDescuentos(pr){
+  if(!pr) return [0];
+  if(Array.isArray(pr.descuentos) && pr.descuentos.length) return pr.descuentos;
+  if(typeof pr.descuento === 'number') return [pr.descuento];
+  return [0];
+}
+function getGanancias(pr){
+  if(!pr) return [0];
+  if(Array.isArray(pr.ganancias) && pr.ganancias.length) return pr.ganancias;
+  if(typeof pr.ganancia === 'number') return [pr.ganancia];
+  return [0];
+}
+function aplicarDescuentos(precio, descuentos){
+  let v = Number(precio)||0;
+  for(const d of (descuentos||[])) v = v * (1 - (Number(d)||0)/100);
+  return v;
+}
+function aplicarGanancias(costo, ganancias){
+  let v = Number(costo)||0;
+  for(const g of (ganancias||[])) v = v * (1 + (Number(g)||0)/100);
+  return v;
+}
+function aplicarGlobales(venta){
+  let v = Number(venta)||0;
+  v = v * (1 + (Number(globalPctIva)||0)/100);
+  v = v * (1 + (Number(globalPctTarjeta)||0)/100);
+  return v;
+}
+function redondearPrecio(v){
+  const step = Number(configRedondeoStep) || 1;
+  return Math.ceil((Number(v)||0) / step) * step;
+}
+
+function openConfiguracionModal(){
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Configuración</h3>
+      <div class="field">
+        <label>Umbral por defecto de "stock bajo"</label>
+        <input id="cfg_stockbajo" type="number" min="0" value="${configStockBajoDefault}">
+        <div class="global-pct-note" style="margin-top:4px;">Se usa como stock mínimo sugerido para los productos nuevos que cargues (podés cambiarlo en cada producto igual).</div>
+      </div>
+      <div class="field">
+        <label>Redondear precio de venta hacia arriba, al múltiplo de $</label>
+        <input id="cfg_redondeo" type="number" min="1" step="1" value="${configRedondeoStep}">
+        <div class="global-pct-note" style="margin-top:4px;">Ej: con 100, un precio de $21.540 se redondea a $21.600. Con 1, un precio de $21,59 se redondea a $22.</div>
+      </div>
+      <div class="field">
+        <label>Versión de WhatsApp al enviar pedidos</label>
+        <select id="cfg_whatsapp_modo">
+          <option value="web" ${configWhatsappModo==='web'?'selected':''}>WhatsApp Web</option>
+          <option value="escritorio" ${configWhatsappModo==='escritorio'?'selected':''}>WhatsApp de escritorio</option>
+        </select>
+        <div class="global-pct-note" style="margin-top:4px;">Elegí cuál se abre cuando tocás "Enviar por WhatsApp" en un pedido.</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="guardarConfiguracion()">Guardar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function guardarConfiguracion(){
+  configStockBajoDefault = Math.max(0, Math.round(Number(document.getElementById('cfg_stockbajo').value)||0));
+  configRedondeoStep = Math.max(1, Math.round(Number(document.getElementById('cfg_redondeo').value)||1));
+  configWhatsappModo = document.getElementById('cfg_whatsapp_modo').value === 'escritorio' ? 'escritorio' : 'web';
+  saveConfiguracion();
+  const n = recalcularTodosLosPrecios();
+  saveProductos();
+  closeModal();
+  render();
+  showToast(`Configuración guardada. Se recalcularon ${n} producto(s).`);
+}
+function formatPctList(arr){
+  const vals = (arr||[]).map(v=>Number(v)||0);
+  if(vals.length === 0) return '0%';
+  return vals.map(v=>`${v}%`).join(' + ');
+}
+function recalcularPreciosProveedor(pr){
+  let actualizados = 0;
+  const descuentos = getDescuentos(pr);
+  const ganancias = getGanancias(pr);
+  for(const p of productos){
+    if(p.proveedorId === pr.id && Number(p.precioLista) > 0){
+      const costoNeto = aplicarDescuentos(p.precioLista, descuentos);
+      const venta = redondearPrecio(aplicarGlobales(aplicarGanancias(costoNeto, ganancias)));
+      const ventaVieja = p.venta;
+      p.costo = costoNeto;
+      p.venta = venta;
+      p.ventaAnterior = ventaVieja;
+      actualizados++;
+    }
+  }
+  return actualizados;
+}
+function recalcularTodosLosPrecios(){
+  let actualizados = 0;
+  for(const p of productos){
+    if(p.proveedorId && Number(p.precioLista) > 0){
+      const pr = proveedores.find(x=>x.id===p.proveedorId);
+      if(!pr) continue;
+      const costoNeto = aplicarDescuentos(p.precioLista, getDescuentos(pr));
+      const venta = redondearPrecio(aplicarGlobales(aplicarGanancias(costoNeto, getGanancias(pr))));
+      const ventaVieja = p.venta;
+      p.costo = costoNeto;
+      p.venta = venta;
+      p.ventaAnterior = ventaVieja;
+      actualizados++;
+    }
+  }
+  return actualizados;
+}
+function updateGlobalPct(field, value){
+  const v = Number(value)||0;
+  if(field==='tarjeta') globalPctTarjeta = v; else globalPctIva = v;
+  saveGlobalPct();
+  const n = recalcularTodosLosPrecios();
+  saveProductos();
+  render();
+  showToast(`Porcentaje global actualizado. Se recalcularon ${n} producto(s).`);
+}
+
+/* ---------------- Render principal ---------------- */
+function render(){
+  document.querySelectorAll('nav.tabs button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.tab === currentTab);
+  });
+  const prevScrollEl = document.querySelector('.table-scroll');
+  const prevScrollTop = prevScrollEl ? prevScrollEl.scrollTop : null;
+  const main = document.getElementById('main');
+  if(currentTab === 'stock') main.innerHTML = renderStock();
+  else if(currentTab === 'pedidos') main.innerHTML = renderPedidos();
+  else if(currentTab === 'proveedores') main.innerHTML = renderProveedores();
+  else if(currentTab === 'metricas') main.innerHTML = renderMetricas();
+  else main.innerHTML = renderCuentas();
+  if(prevScrollTop !== null){
+    const newScrollEl = document.querySelector('.table-scroll');
+    if(newScrollEl) newScrollEl.scrollTop = prevScrollTop;
+  }
+}
+
+/* ================= STOCK ================= */
+function getPedidoIndicator(productId){
+  const relevantes = pedidos.filter(ped => ped.estado === 'pendiente' && ped.items.some(it => it.productId === productId));
+  if(relevantes.length === 0) return null;
+  const rank = { amarillo: 3, naranja: 2, rojo: 1 };
+  let mejor = null;
+  for(const ped of relevantes){
+    const tieneParcial = (ped.notas || '').includes('Recepción parcial');
+    let estado;
+    if(tieneParcial) estado = 'amarillo';
+    else if(ped.enviado) estado = 'naranja';
+    else estado = 'rojo';
+    if(!mejor || rank[estado] > rank[mejor]) mejor = estado;
+  }
+  return mejor;
+}
+
+function sortStockColumn(col){
+  if(stockSortColumn === col){
+    stockSortDir = stockSortDir === 'asc' ? 'desc' : 'asc';
+  }else{
+    stockSortColumn = col;
+    stockSortDir = 'asc';
+  }
+  render();
+}
+function compareNatural(a, b){
+  const ax = String(a).match(/(\d+|\D+)/g) || [];
+  const bx = String(b).match(/(\d+|\D+)/g) || [];
+  const len = Math.max(ax.length, bx.length);
+  for(let i=0;i<len;i++){
+    const as = ax[i] || '';
+    const bs = bx[i] || '';
+    const an = /^\d+$/.test(as), bn = /^\d+$/.test(bs);
+    if(an && bn){
+      const diff = parseInt(as,10) - parseInt(bs,10);
+      if(diff !== 0) return diff;
+    }else{
+      const cmp = as.toLowerCase().localeCompare(bs.toLowerCase());
+      if(cmp !== 0) return cmp;
+    }
+  }
+  return 0;
+}
+function compararStock(a, b, col, dir){
+  let va, vb;
+  if(col === 'costo' || col === 'stock'){
+    va = Number(a[col]) || 0;
+    vb = Number(b[col]) || 0;
+    if(va < vb) return dir === 'asc' ? -1 : 1;
+    if(va > vb) return dir === 'asc' ? 1 : -1;
+    return 0;
+  }
+  if(col === 'codigo'){
+    const cmp = compareNatural(a.codigo||'', b.codigo||'');
+    return dir === 'asc' ? cmp : -cmp;
+  }
+  const campo = { proveedor:'proveedor', producto:'nombre', rubro:'categoria' }[col] || col;
+  va = String(a[campo]||'').toLowerCase();
+  vb = String(b[campo]||'').toLowerCase();
+  const cmp = va.localeCompare(vb);
+  return dir === 'asc' ? cmp : -cmp;
+}
+function flechaOrden(col){
+  if(stockSortColumn !== col) return '';
+  return stockSortDir === 'asc' ? ' ▲' : ' ▼';
+}
+
+function renderStock(){
+  const cats = categorias();
+  const hasQuery = searchStock.trim() !== '' || filterCat !== '';
+  let list = [];
+  if(hasQuery){
+    const tokens = searchStock.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    list = productos.filter(p=>{
+      const haystack = `${p.nombre} ${p.codigo||''} ${p.categoria||''} ${p.proveedor||''}`.toLowerCase();
+      const matchS = tokens.length === 0 || tokens.every(t => haystack.includes(t));
+      const matchC = !filterCat || p.categoria === filterCat;
+      return matchS && matchC;
+    });
+    if(stockSortColumn){
+      list.sort((a,b)=> compararStock(a,b,stockSortColumn,stockSortDir));
+    }else{
+      list.sort((a,b)=> a.nombre.localeCompare(b.nombre));
+    }
+  }
+
+  const valorInventario = productos.reduce((acc,p)=> acc + (Number(p.stock)||0) * (Number(p.costo)||0), 0);
+  const bajoCount = productos.filter(p => Number(p.stock) <= Number(p.stockMin||0)).length;
+
+  let html = `
+  <div class="dash-toggle" onclick="toggleDash()">${dashExpandido ? '▾' : '▸'} Resumen de stock</div>`;
+  if(dashExpandido){
+    html += `<div class="dash">
+      <div class="card"><div class="num">${productos.length}</div><div class="lbl">Productos</div></div>
+      <div class="card warn"><div class="num">${bajoCount}</div><div class="lbl">Stock bajo</div></div>
+      <div class="card"><div class="num mono">${money(valorInventario)}</div><div class="lbl">Valor inventario (costo)</div></div>
+    </div>`;
+  }
+  html += `
+  <div class="toolbar">
+    <div class="search-wrap">
+      <input id="stock_search_input" type="text" placeholder="Buscar producto, código... (Enter para buscar)" value="${esc(searchStock)}" onkeydown="if(event.key==='Enter'){ stockSearchSubmit(this.value); }">
+      <button class="icon-btn" title="Buscar" onclick="stockSearchSubmit(document.getElementById('stock_search_input').value)">🔎</button>
+      ${searchStock ? `<button class="icon-btn" title="Limpiar búsqueda" onclick="clearStockSearch()">✕</button>` : ''}
+    </div>
+    <select onchange="filterCat=this.value; render()">
+      <option value="">Todas las categorías</option>
+      ${cats.map(c=>`<option value="${esc(c)}" ${filterCat===c?'selected':''}>${esc(c)}</option>`).join('')}
+    </select>
+  </div>`;
+
+  html += `<div class="stock-layout">`;
+  html += `<div class="stock-main">`;
+
+  if(!hasQuery){
+    html += `<div class="empty"><div class="big">${productos.length===0 ? 'Todavía no cargaste productos' : 'Buscá un producto para empezar'}</div>
+      <div>${productos.length===0 ? 'Importá una lista de precios desde la pestaña Proveedores para empezar.' : 'Escribí un nombre o código arriba, o elegí una categoría.'}</div></div>`;
+  }else if(list.length === 0){
+    html += `<div class="empty"><div class="big">No hay resultados</div>
+      <div>Probá con otra búsqueda o categoría.</div></div>`;
+  }else{
+    const cw = colWidths;
+    html += `<div class="table-scroll"><table class="resizable">
+      <colgroup>
+        <col data-col="pedidoEstado" style="width:${cw.pedidoEstado}px;">
+        <col data-col="proveedor" style="width:${cw.proveedor}px;">
+        <col data-col="codigo" style="width:${cw.codigo}px;">
+        <col data-col="rubro" style="width:${cw.rubro}px;">
+        <col data-col="um" style="width:${cw.um}px;">
+        <col data-col="producto" style="width:${cw.producto}px;">
+        <col data-col="costo" style="width:${cw.costo}px;">
+        <col data-col="stock" style="width:${cw.stock}px;">
+        <col data-col="acciones" style="width:${cw.acciones}px;">
+      </colgroup>
+      <thead><tr>
+      <th title="Estado del pedido: rojo = pedido pendiente, naranja = pedido vencido, amarillo = llegó pero faltó este producto"></th>
+      <th class="cell-trunc th-sort" onclick="sortStockColumn('proveedor')">Proveedor${flechaOrden('proveedor')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'proveedor')"></span></th>
+      <th class="cell-trunc th-sort" onclick="sortStockColumn('codigo')">Código${flechaOrden('codigo')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'codigo')"></span></th>
+      <th class="cell-trunc th-sort" onclick="sortStockColumn('rubro')">Rubro${flechaOrden('rubro')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'rubro')"></span></th>
+      <th class="cell-trunc">UM<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'um')"></span></th>
+      <th class="cell-trunc th-sort" onclick="sortStockColumn('producto')">Producto${flechaOrden('producto')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'producto')"></span></th>
+      <th class="cell-trunc th-sort" onclick="sortStockColumn('costo')">Costo${flechaOrden('costo')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'costo')"></span></th>
+      <th class="cell-trunc th-sort" onclick="sortStockColumn('stock')">Stock${flechaOrden('stock')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'stock')"></span></th>
+      <th></th>
+    </tr></thead><tbody>`;
+
+    for(const p of list){
+      const bajo = Number(p.stock) <= Number(p.stockMin||0);
+      const sel = p.id === selectedProductId;
+      html += `<tr data-id="${p.id}" onclick="selectProducto('${p.id}')" style="cursor:pointer; ${sel?'background:#faf0e8;':''}">
+        <td data-label="" style="text-align:center;">${(()=>{
+          const ind = getPedidoIndicator(p.id);
+          if(!ind) return '';
+          const colores = { rojo:'#c0392b', naranja:'#e07b1f', amarillo:'#d4a017' };
+          const titulos = { rojo:'Anotado como faltante, todavía no se le envió el pedido al proveedor', naranja:'Pedido ya enviado al proveedor, esperando que llegue', amarillo:'El pedido llegó pero este producto faltó' };
+          return `<span title="${titulos[ind]}" style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${colores[ind]};"></span>`;
+        })()}</td>
+        <td data-label="Proveedor" class="cell-trunc">${p.proveedor?esc(p.proveedor):'—'}</td>
+        <td data-label="Código" class="mono cell-trunc">${p.codigo?esc(p.codigo):'—'}</td>
+        <td data-label="Rubro" class="cell-trunc">${p.categoria?esc(p.categoria):'—'}</td>
+        <td data-label="UM" class="cell-trunc">${p.presentacion?esc(p.presentacion):'UN'}</td>
+        <td data-label="Producto" class="cell-trunc" title="${esc(p.nombre)}">${esc(p.nombre)}</td>
+        <td data-label="Costo" class="price cell-trunc">${money(p.costo)}</td>
+        <td data-label="Stock">
+          <div class="stock-adjust" onclick="event.stopPropagation()">
+            <input type="number" value="${Number(p.stock)||0}" onchange="setStock('${p.id}', this.value)">
+            ${bajo ? `<span title="Stock bajo" style="color:#d4a017; font-size:15px; font-weight:800;">▼</span>` : ''}
+          </div>
+        </td>
+        <td data-label="">
+          <div class="row-actions" onclick="event.stopPropagation()">
+            <button class="icon-btn" title="Editar" onclick="openProductoModal('${p.id}')">✎</button>
+            <button class="icon-btn" title="Registrar faltante" onclick="openFaltanteModal('${p.id}')">🛒</button>
+            <button class="icon-btn" title="Eliminar" onclick="deleteProducto('${p.id}')">🗑</button>
+          </div>
+        </td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>`;
+  }
+  html += `</div>`; // stock-main
+  html += `<div id="priceDetailPanel">${renderPriceDetail()}</div>`;
+  html += `</div>`; // stock-layout
+  return html;
+}
+
+function startColResize(e, key){
+  e.preventDefault();
+  e.stopPropagation();
+  const col = document.querySelector(`col[data-col="${key}"]`);
+  if(!col) return;
+  const startX = e.clientX;
+  const startWidth = parseInt(col.style.width, 10) || 100;
+  function onMove(ev){
+    const delta = ev.clientX - startX;
+    let newWidth = Math.max(40, startWidth + delta);
+    if(key === 'producto') newWidth = Math.min(newWidth, PRODUCTO_MAX_WIDTH);
+    col.style.width = newWidth + 'px';
+    colWidths[key] = newWidth;
+  }
+  function onUp(){
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    saveColWidths();
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+function renderPriceDetail(){
+  const p = productos.find(x=>x.id===selectedProductId);
+  if(!p){
+    return `<div class="price-detail"><div class="pd-title">Precio</div>
+      <div class="pd-empty">Tocá un producto de la lista para ver su precio.</div></div>`;
+  }
+  const proveedor = proveedores.find(pr=>pr.id===p.proveedorId);
+  const descuentoPct = proveedor ? formatPctList(getDescuentos(proveedor)) : null;
+  const gananciaPct = proveedor ? formatPctList(getGanancias(proveedor)) : null;
+  const precioLista = Number(p.precioLista) || Number(p.costo) || 0;
+  const costo = Number(p.costo) || 0;
+  const venta = Number(p.venta) || 0;
+  const descuentoMonto = precioLista - costo;
+
+  // Desglose paso a paso: costo -> ganancia individual -> IVA global -> recargo tarjeta global -> venta final
+  let gananciaBase = costo, ivaMonto = 0, tarjetaMonto = 0, gananciaMonto = venta - costo;
+  if(proveedor){
+    gananciaBase = aplicarGanancias(costo, getGanancias(proveedor));
+    gananciaMonto = gananciaBase - costo;
+    const conIva = gananciaBase * (1 + (Number(globalPctIva)||0)/100);
+    ivaMonto = conIva - gananciaBase;
+    const conTarjeta = conIva * (1 + (Number(globalPctTarjeta)||0)/100);
+    tarjetaMonto = conTarjeta - conIva;
+  }
+
+  let flecha = '';
+  if(typeof p.ventaAnterior === 'number' && !isNaN(p.ventaAnterior) && p.ventaAnterior !== venta){
+    if(venta > p.ventaAnterior){
+      flecha = `<span title="Subió respecto a la última lista (antes ${money(p.ventaAnterior)})" style="color:var(--danger); font-size:0.55em; vertical-align:middle;">▲</span>`;
+    }else{
+      flecha = `<span title="Bajó respecto a la última lista (antes ${money(p.ventaAnterior)})" style="color:var(--good); font-size:0.55em; vertical-align:middle;">▼</span>`;
+    }
+  }
+
+  return `<div class="price-detail">
+    <div class="pd-title" title="${esc(p.nombre)}">${esc(p.nombre)}</div>
+    <div class="pd-price-big">${money(venta)} ${flecha}</div>
+    <button class="btn secondary small" style="width:100%;" onclick="toggleDetalle()">${detalleExpandido ? 'Ocultar detalle ▴' : 'Ver detalle ▾'}</button>
+    ${detalleExpandido ? `
+    <div class="pd-breakdown">
+      <div class="pd-row"><span>Precio de lista</span><span class="mono">${money(precioLista)}</span></div>
+      <div class="pd-row"><span>Descuento${descuentoPct!=null?` (${descuentoPct})`:''}</span><span class="mono">−${money(descuentoMonto)}</span></div>
+      <div class="pd-row total"><span>Costo</span><span class="mono">${money(costo)}</span></div>
+      <div class="pd-row"><span>Ganancia${gananciaPct!=null?` (${gananciaPct})`:''}</span><span class="mono">+${money(gananciaMonto)}</span></div>
+      ${Number(globalPctIva) ? `<div class="pd-row"><span>IVA (${globalPctIva}%)</span><span class="mono">+${money(ivaMonto)}</span></div>` : ''}
+      ${Number(globalPctTarjeta) ? `<div class="pd-row"><span>Recargo tarjeta (${globalPctTarjeta}%)</span><span class="mono">+${money(tarjetaMonto)}</span></div>` : ''}
+    </div>` : ''}
+  </div>`;
+}
+
+function toggleDetalle(){
+  detalleExpandido = !detalleExpandido;
+  const panel = document.getElementById('priceDetailPanel');
+  if(panel) panel.innerHTML = renderPriceDetail();
+  else render();
+}
+
+function selectProducto(id){
+  selectedProductId = (selectedProductId === id) ? null : id;
+
+  const rows = document.querySelectorAll('table.resizable tbody tr[data-id]');
+  if(rows.length){
+    rows.forEach(tr=>{ tr.style.background = (tr.dataset.id === selectedProductId) ? '#faf0e8' : ''; });
+    const panel = document.getElementById('priceDetailPanel');
+    if(panel) panel.innerHTML = renderPriceDetail();
+    else render();
+  }else{
+    render();
+  }
+}
+
+function stockSearchSubmit(val){
+  searchStock = val;
+  render();
+  focusStockSearch();
+}
+function clearStockSearch(){
+  searchStock = '';
+  render();
+  focusStockSearch();
+}
+function focusStockSearch(){
+  const el = document.getElementById('stock_search_input');
+  if(el){ el.focus(); const len = el.value.length; el.setSelectionRange(len, len); }
+}
+
+function adjustStock(id, delta){
+  const p = productos.find(x=>x.id===id);
+  if(!p) return;
+  p.stock = Math.max(0, (Number(p.stock)||0) + delta);
+  saveProductos();
+  render();
+}
+function setStock(id, value){
+  const p = productos.find(x=>x.id===id);
+  if(!p) return;
+  const v = Math.max(0, Math.round(Number(value)||0));
+  p.stock = v;
+  saveProductos();
+  render();
+}
+function deleteProducto(id){
+  const p = productos.find(x=>x.id===id);
+  if(!p) return;
+  if(!confirm(`¿Eliminar "${p.nombre}" del stock? Esta acción no se puede deshacer.`)) return;
+  productos = productos.filter(x=>x.id!==id);
+  if(selectedProductId === id) selectedProductId = null;
+  saveProductos();
+  render();
+  showToast('Producto eliminado');
+}
+
+function openFaltanteModal(productId){
+  const p = productos.find(x=>x.id===productId);
+  if(!p) return;
+  const sugerido = Math.max(1, (Number(p.stockMin)||0) - (Number(p.stock)||0));
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Registrar faltante</h3>
+      <div class="subtitle">${esc(p.nombre)}</div>
+      ${!p.proveedor ? `
+        <div class="field"><label>¿A qué proveedor pedirlo?</label><input id="fal_proveedor" list="fal_prov_datalist" type="text" placeholder="Nombre del proveedor"></div>
+        <datalist id="fal_prov_datalist">${proveedores.map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
+      ` : `<div class="field"><label>Proveedor</label><input type="text" value="${esc(p.proveedor)}" disabled></div>`}
+      <div class="field"><label>Cantidad a pedir</label><input id="fal_cantidad" type="number" min="1" value="${sugerido}"></div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="confirmarFaltante('${productId}')">Agregar al pedido</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function confirmarFaltante(productId){
+  const p = productos.find(x=>x.id===productId);
+  if(!p) return;
+  let proveedorNombre = p.proveedor;
+  const provInput = document.getElementById('fal_proveedor');
+  if(provInput) proveedorNombre = provInput.value.trim();
+  if(!proveedorNombre){ showToast('Indicá a qué proveedor pedirlo'); return; }
+  const cantidad = Math.max(1, Math.round(Number(document.getElementById('fal_cantidad').value)||1));
+
+  if(!p.proveedor){
+    p.proveedor = proveedorNombre;
+    const provMatch = proveedores.find(pr => pr.nombre.toLowerCase() === proveedorNombre.toLowerCase());
+    if(provMatch) p.proveedorId = provMatch.id;
+    saveProductos();
+  }
+
+  let ped = pedidos.find(x => x.estado === 'pendiente' && normTxt(x.proveedor) === normTxt(proveedorNombre));
+  if(!ped){
+    ped = { id: uid(), proveedor: proveedorNombre, fecha: today(), items: [], notas: '', estado: 'pendiente', enviado: false };
+    pedidos.push(ped);
+  }
+  const existing = ped.items.find(i=>i.productId===p.id);
+  if(existing){
+    existing.cantidad += cantidad;
+    existing.fechaAgregado = today();
+  }else{
+    ped.items.push({ productId: p.id, nombre: p.nombre, cantidad, fechaAgregado: today() });
+  }
+
+  savePedidos();
+  closeModal();
+  openPedidoIds.add(ped.id);
+  render();
+  showToast(`Agregado al pedido de ${proveedorNombre}`);
+}
+
+function openProductoModal(id){
+  const editing = id ? productos.find(x=>x.id===id) : null;
+  const cats = categorias();
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>${editing ? 'Editar producto' : 'Nuevo producto'}</h3>
+      <div class="field"><label>Nombre *</label><input id="f_nombre" type="text" value="${editing?esc(editing.nombre):''}" placeholder="Ej: Tornillo autoperforante 6x1"></div>
+      <div class="field-row">
+        <div class="field"><label>Categoría / Rubro</label><input id="f_categoria" list="cat_list" type="text" value="${editing?esc(editing.categoria||''):''}" placeholder="Ej: Tornillería"></div>
+        <div class="field"><label>Código / SKU</label><input id="f_codigo" type="text" value="${editing?esc(editing.codigo||''):''}" placeholder="Opcional"></div>
+      </div>
+      <datalist id="cat_list">${cats.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
+      <div class="field-row">
+        <div class="field"><label>Stock actual</label><input id="f_stock" type="number" value="${editing?Number(editing.stock)||0:0}"></div>
+        <div class="field"><label>Stock mínimo</label><input id="f_stockmin" type="number" value="${editing?Number(editing.stockMin)||0:configStockBajoDefault}"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Precio de lista</label><input id="f_precioLista" type="number" step="0.01" value="${editing?editing.precioLista||'':''}" placeholder="Precio sin descuento"></div>
+        <div class="field"><label>Precio costo</label><input id="f_costo" type="number" step="0.01" value="${editing?editing.costo||'':''}"></div>
+        <div class="field"><label>Precio venta *</label><input id="f_venta" type="number" step="0.01" value="${editing?editing.venta||'':''}"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Proveedor habitual</label><input id="f_proveedor" list="prov_datalist" type="text" value="${editing?esc(editing.proveedor||''):''}" placeholder="Opcional"></div>
+        <div class="field"><label>¿Cómo viene?</label><input id="f_presentacion" list="pres_datalist" type="text" value="${editing?esc(editing.presentacion||''):''}" placeholder="Unidad, docena, gruesa..."></div>
+      </div>
+      <datalist id="prov_datalist">${proveedores.map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
+      <datalist id="pres_datalist">
+        <option value="Unidad"><option value="Docena"><option value="Media docena"><option value="Gruesa">
+        <option value="Caja"><option value="Bulto"><option value="Par"><option value="Kg"><option value="Metro"><option value="Rollo">
+      </datalist>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="saveProducto(${editing?`'${editing.id}'`:'null'})">Guardar</button>
+      </div>
+    </div>
+  </div>`;
+}
+function closeModal(){ document.getElementById('modalRoot').innerHTML = ''; }
+
+function saveProducto(id){
+  const nombre = document.getElementById('f_nombre').value.trim();
+  const venta = document.getElementById('f_venta').value;
+  if(!nombre){ showToast('Poné un nombre para el producto'); return; }
+  if(venta === '' || isNaN(Number(venta))){ showToast('Poné un precio de venta válido'); return; }
+
+  const provNombre = document.getElementById('f_proveedor').value.trim();
+  const provMatch = proveedores.find(pr => pr.nombre.toLowerCase() === provNombre.toLowerCase());
+
+  const data = {
+    nombre,
+    categoria: document.getElementById('f_categoria').value.trim(),
+    codigo: document.getElementById('f_codigo').value.trim(),
+    stock: Math.max(0, Math.round(Number(document.getElementById('f_stock').value)||0)),
+    stockMin: Math.max(0, Math.round(Number(document.getElementById('f_stockmin').value)||0)),
+    precioLista: Number(document.getElementById('f_precioLista').value)||0,
+    costo: Number(document.getElementById('f_costo').value)||0,
+    venta: Number(venta),
+    proveedor: provNombre,
+    proveedorId: provMatch ? provMatch.id : null,
+    presentacion: document.getElementById('f_presentacion').value.trim(),
+  };
+
+  if(id){
+    const p = productos.find(x=>x.id===id);
+    const ventaVieja = p.venta;
+    Object.assign(p, data);
+    p.ventaAnterior = ventaVieja;
+  }else{
+    productos.push({ id: uid(), ...data });
+    currentTab = 'stock';
+  }
+  saveProductos();
+  closeModal();
+  render();
+  showToast('Producto guardado');
+}
+
+/* ================= PEDIDOS ================= */
+function renderPedidos(){
+  let html = `<div class="toolbar">
+    <div class="spacer"></div>
+    <button class="btn" onclick="openNuevoPedidoModal()">+ Nuevo pedido</button>
+  </div>`;
+
+  if(pedidos.length === 0){
+    html += `<div class="empty"><div class="big">No hay pedidos todavía</div>
+      <div>Creá un pedido a tu proveedor para reponer stock.</div></div>`;
+    return html;
+  }
+
+  const ordenados = [...pedidos].sort((a,b)=> b.fecha.localeCompare(a.fecha));
+  for(const ped of ordenados){
+    const abierto = openPedidoIds.has(ped.id);
+    const totalItems = ped.items.reduce((a,i)=>a+Number(i.cantidad),0);
+    let totalPedido = 0;
+    for(const it of ped.items){
+      const prod = productos.find(x=>x.id===it.productId);
+      const valorUnitario = prod ? Number(prod.costo)||0 : 0;
+      const cantidadPedida = Number(it.cantidad)||0;
+      const subtotalItem = valorUnitario * cantidadPedida;
+      totalPedido += subtotalItem;
+    }
+    const texto = buildPedidoText(ped);
+    const provObj = proveedores.find(pr => normTxt(pr.nombre) === normTxt(ped.proveedor));
+    const telLimpio = provObj && provObj.whatsapp ? String(provObj.whatsapp).replace(/[^0-9]/g,'') : '';
+    const linkWhatsapp = buildWhatsappLink(telLimpio, texto);
+    const linkMail = 'mailto:?subject=' + encodeURIComponent(`Pedido a ${ped.proveedor || ''}`) + '&body=' + encodeURIComponent(texto);
+    const est = estadoPedido(ped);
+    html += `<div class="pedido-card">
+      <div class="pedido-head" style="display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:160px; cursor:pointer;" onclick="togglePedido('${ped.id}')">
+          <div class="prov">${esc(ped.proveedor || 'Sin proveedor')}</div>
+          <div class="meta">${ped.fecha} · ${ped.items.length} producto(s) · ${totalItems} unidades · <b class="mono" style="color:var(--ink);">${money(totalPedido, 2)}</b></div>
+        </div>
+        <div class="row-actions" onclick="event.stopPropagation()">
+          <a class="btn small btn-whatsapp" href="${linkWhatsapp}" target="_blank" rel="noopener" onclick="marcarPedidoEnviado('${ped.id}', true)" title="${telLimpio ? 'Abre la conversación con ' + esc(provObj.nombre) : 'No hay WhatsApp cargado para este proveedor: vas a elegir el contacto a mano'}">Enviar por WhatsApp</a>
+          <a class="btn small btn-mail-celeste" href="${linkMail}" onclick="marcarPedidoEnviado('${ped.id}', true)">Enviar por mail</a>
+        </div>
+        <span class="badge ${est.clase}" onclick="event.stopPropagation(); togglePedido('${ped.id}')" style="cursor:pointer;">${est.label}</span>
+      </div>
+      ${abierto ? renderPedidoBody(ped) : ''}
+    </div>`;
+  }
+  return html;
+}
+
+function togglePedido(id){
+  if(openPedidoIds.has(id)) openPedidoIds.delete(id);
+  else openPedidoIds.add(id);
+  render();
+}
+
+function buildPedidoText(ped){
+  const lineas = [];
+  lineas.push(`Pedido para ${ped.proveedor || 'proveedor'}`);
+  lineas.push(`Fecha: ${ped.fecha}`);
+  lineas.push('');
+  for(const it of ped.items){
+    const prod = productos.find(x=>x.id===it.productId);
+    const codigo = prod && prod.codigo ? prod.codigo : '';
+    lineas.push(`- ${codigo ? codigo + ' - ' : ''}${it.nombre} x${it.cantidad}`);
+  }
+  if(ped.notas){ lineas.push(''); lineas.push(`Notas: ${ped.notas}`); }
+  return lineas.join('\n');
+}
+
+function buildWhatsappLink(telLimpio, texto){
+  const encoded = encodeURIComponent(texto);
+  if(configWhatsappModo === 'escritorio'){
+    return telLimpio ? `whatsapp://send?phone=${telLimpio}&text=${encoded}` : `whatsapp://send?text=${encoded}`;
+  }
+  return telLimpio ? `https://web.whatsapp.com/send?phone=${telLimpio}&text=${encoded}` : `https://web.whatsapp.com/send?text=${encoded}`;
+}
+function estadoPedido(ped){
+  if(ped.estado === 'recibido') return { label:'Recibido', clase:'good' };
+  if(ped.enviado) return { label:'Enviado', clase:'sent' };
+  return { label:'Pendiente', clase:'warn' };
+}
+function marcarPedidoEnviado(pedidoId, valor){
+  const ped = pedidos.find(x=>x.id===pedidoId);
+  if(!ped) return;
+  ped.enviado = !!valor;
+  savePedidos();
+  render();
+}
+
+function renderPedidoBody(ped){
+  let html = `<div class="pedido-body">`;
+  html += `
+    <div class="preview-wrap" style="margin-bottom:12px;"><table><thead><tr>
+      <th>Código</th><th>Producto</th><th>UM</th><th>Costo</th><th>Cantidad</th><th>Agregado</th><th></th>
+    </tr></thead><tbody>`;
+  for(const it of ped.items){
+    const prod = productos.find(x=>x.id===it.productId);
+    const codigo = prod && prod.codigo ? prod.codigo : '—';
+    const um = prod && prod.presentacion ? prod.presentacion : 'UN';
+    const costo = prod ? Number(prod.costo)||0 : 0;
+    html += `<tr>
+      <td class="mono">${esc(codigo)}</td>
+      <td>${esc(prod ? prod.nombre : it.nombre)}</td>
+      <td>${esc(um)}</td>
+      <td class="price">${money(costo)}</td>
+      <td><input type="number" min="1" value="${Number(it.cantidad)||1}" style="width:64px; padding:5px; border:1px solid var(--line); border-radius:6px; font-family:ui-monospace, Consolas, 'Liberation Mono', monospace;" onchange="updatePedidoItemCantidad('${ped.id}','${it.productId}', this.value)"></td>
+      <td>${it.fechaAgregado || ped.fecha || '—'}</td>
+      <td><button class="icon-btn" title="Quitar del pedido" onclick="removePedidoItem('${ped.id}','${it.productId}')">🗑</button></td>
+    </tr>`;
+  }
+  html += `</tbody></table></div>`;
+  if(ped.notas){ html += `<div class="meta" style="margin-bottom:10px;">Notas: ${esc(ped.notas)}</div>`; }
+  html += `<div class="row-actions" style="justify-content:flex-start;">`;
+  if(ped.estado !== 'recibido'){
+    html += `<button class="btn small btn-mail-celeste" onclick="openAgregarProductosModal('${ped.id}')">+ Agregar productos</button>`;
+    html += `<button class="btn small" onclick="openRecibirModal('${ped.id}')">Recibir pedido</button>`;
+  }
+  html += `<button class="btn small danger" onclick="deletePedido('${ped.id}')">Eliminar pedido</button>`;
+  html += `</div></div>`;
+  return html;
+}
+
+let agregarPedidoItemsTemp = [];
+let agregarPedidoIdActual = null;
+
+function openAgregarProductosModal(pedidoId){
+  const ped = pedidos.find(x=>x.id===pedidoId);
+  if(!ped) return;
+  if(productos.length === 0){ showToast('Todavía no hay productos cargados en Stock'); return; }
+  agregarPedidoItemsTemp = [];
+  agregarPedidoIdActual = pedidoId;
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Agregar productos al pedido</h3>
+      <div class="subtitle">${esc(ped.proveedor||'')}</div>
+      <div class="item-row-add">
+        <div class="field" style="flex:2; min-width:140px;">
+          <label>Código</label>
+          <input id="ap_codigo" type="text" placeholder="Escribí el código del producto" onkeydown="if(event.key==='Enter'){ addItemAgregarPedido(); }">
+        </div>
+        <div class="field" style="max-width:90px;">
+          <label>Cantidad</label>
+          <input id="ap_cantidad" type="number" min="1" value="1" onkeydown="if(event.key==='Enter'){ addItemAgregarPedido(); }">
+        </div>
+        <button class="btn secondary small" onclick="addItemAgregarPedido()">Agregar</button>
+      </div>
+      <ul class="pedido-items-list" id="ap_items_list"></ul>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-mail-celeste" onclick="guardarAgregarProductosPedido()">Guardar en el pedido</button>
+      </div>
+    </div>
+  </div>`;
+  renderApItemsList();
+  const codigoInput = document.getElementById('ap_codigo');
+  if(codigoInput) codigoInput.focus();
+}
+
+function addItemAgregarPedido(){
+  const codigoInput = document.getElementById('ap_codigo');
+  const codigo = codigoInput.value.trim();
+  if(!codigo){ showToast('Escribí un código'); return; }
+  const cant = Math.max(1, Math.round(Number(document.getElementById('ap_cantidad').value)||1));
+  const p = productos.find(x => x.codigo && normTxt(x.codigo) === normTxt(codigo));
+  if(!p){ showToast('No se encontró ningún producto con ese código'); return; }
+  const existing = agregarPedidoItemsTemp.find(i=>i.productId===p.id);
+  if(existing) existing.cantidad += cant;
+  else agregarPedidoItemsTemp.push({ productId:p.id, nombre:p.nombre, cantidad:cant });
+  renderApItemsList();
+  codigoInput.value = '';
+  codigoInput.focus();
+}
+function renderApItemsList(){
+  const ul = document.getElementById('ap_items_list');
+  if(!ul) return;
+  ul.innerHTML = agregarPedidoItemsTemp.map((it,idx)=>
+    `<li><span>${esc(it.nombre)}</span><span>x${it.cantidad} <button class="icon-btn" style="width:22px;height:22px;font-size:12px;margin-left:8px;" onclick="removeApItem(${idx})">✕</button></span></li>`
+  ).join('') || '<li style="color:#63676e;">Todavía no agregaste productos</li>';
+}
+function removeApItem(idx){
+  agregarPedidoItemsTemp.splice(idx,1);
+  renderApItemsList();
+}
+function guardarAgregarProductosPedido(){
+  if(agregarPedidoItemsTemp.length === 0){ showToast('Agregá al menos un producto'); return; }
+  const ped = pedidos.find(x=>x.id===agregarPedidoIdActual);
+  if(!ped) return;
+  for(const it of agregarPedidoItemsTemp){
+    const existing = ped.items.find(i=>i.productId===it.productId);
+    if(existing){
+      existing.cantidad += it.cantidad;
+      existing.fechaAgregado = today();
+    }else{
+      ped.items.push({ productId: it.productId, nombre: it.nombre, cantidad: it.cantidad, fechaAgregado: today() });
+    }
+  }
+  savePedidos();
+  closeModal();
+  render();
+  showToast('Productos agregados al pedido');
+}
+
+function updatePedidoItemCantidad(pedidoId, productId, value){
+  const ped = pedidos.find(x=>x.id===pedidoId);
+  if(!ped) return;
+  const item = ped.items.find(i=>i.productId===productId);
+  if(!item) return;
+  item.cantidad = Math.max(1, Math.round(Number(value))||1);
+  savePedidos();
+  render();
+}
+
+function removePedidoItem(pedidoId, productId){
+  const ped = pedidos.find(x=>x.id===pedidoId);
+  if(!ped) return;
+  ped.items = ped.items.filter(i=>i.productId!==productId);
+  if(ped.items.length === 0){
+    pedidos = pedidos.filter(x=>x.id!==pedidoId);
+    if(openPedidoIds.has(pedidoId)) openPedidoIds.delete(pedidoId);
+    showToast('Pedido eliminado (no quedaban productos)');
+  }
+  savePedidos();
+  render();
+}
+
+let recepcionPedidoId = null;
+
+function marcarRecibidoRapido(idx, tipo){
+  const row = document.querySelector(`#rec_items_body tr[data-idx="${idx}"]`);
+  if(!row) return;
+  const inp = row.querySelector('.rec-input');
+  if(!inp) return;
+  inp.value = tipo === 'todo' ? Number(row.dataset.pedidoqty)||0 : 0;
+}
+
+function openRecibirModal(pedidoId){
+  const ped = pedidos.find(x=>x.id===pedidoId);
+  if(!ped) return;
+  recepcionPedidoId = pedidoId;
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal wide">
+      <h3>Recibir pedido — ${esc(ped.proveedor||'')}</h3>
+      <div class="subtitle">Poné cuánto llegó de cada producto (mirando la factura o el remito). Lo que falte queda pendiente en este mismo pedido.</div>
+      <div class="field" style="max-width:360px;">
+        <label>¿Tenés la foto de la factura? Subila y la completo sola</label>
+        <input id="rec_file" type="file" accept="image/*" onchange="handleFacturaFoto(this)">
+      </div>
+      <div id="rec_foto_status"></div>
+      <div class="preview-wrap" style="margin:12px 0; max-height:280px;"><table><thead><tr>
+        <th>Código</th><th>Producto</th><th>Pedido</th><th>Recibido</th><th></th>
+      </tr></thead><tbody id="rec_items_body">
+        ${ped.items.map((it,idx)=>{
+          const prod = productos.find(p=>p.id===it.productId);
+          const codigo = prod && prod.codigo ? prod.codigo : '';
+          return `<tr data-idx="${idx}" data-productid="${it.productId}" data-pedidoqty="${it.cantidad}">
+            <td class="mono">${codigo?esc(codigo):'—'}</td>
+            <td>${esc(it.nombre)}</td>
+            <td class="mono">${it.cantidad}</td>
+            <td><input type="number" min="0" class="rec-input" data-idx="${idx}" value="${it.cantidad}" style="width:70px; padding:5px; border:1px solid var(--line); border-radius:6px; font-family:ui-monospace, Consolas, 'Liberation Mono', monospace;"></td>
+            <td>
+              <div class="row-actions">
+                <button type="button" class="icon-btn" style="color:var(--good); border-color:var(--good);" title="Vino todo lo pedido" onclick="marcarRecibidoRapido(${idx}, 'todo')">✓</button>
+                <button type="button" class="icon-btn" style="color:var(--danger); border-color:var(--danger);" title="No vino nada de este producto" onclick="marcarRecibidoRapido(${idx}, 'nada')">✗</button>
+              </div>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody></table></div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="confirmarRecepcion('${ped.id}')">Confirmar recepción</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function handleFacturaFoto(input){
+  const file = input.files[0];
+  if(!file) return;
+  const ped = pedidos.find(x=>x.id===recepcionPedidoId);
+  const statusEl = document.getElementById('rec_foto_status');
+  if(statusEl) statusEl.innerHTML = `<div class="meta">Leyendo la factura…</div>`;
+  try{
+    const base64 = await new Promise((resolve, reject)=>{
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1]);
+      reader.onerror = () => reject(new Error('No se pudo leer la imagen'));
+      reader.readAsDataURL(file);
+    });
+    const mediaType = file.type || 'image/jpeg';
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1200,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            { type: 'text', text: 'Sos un asistente que lee facturas o remitos argentinos de mercadería entregada. Mirá la imagen y devolvé SOLO un JSON válido, sin texto adicional, sin comillas invertidas y sin la palabra json antes: un array de objetos, uno por cada línea de producto, con esta forma exacta: [{"codigo":"ABC123","cantidad":5}]. El "codigo" es el valor de la columna CODIGO. La "cantidad" es el número de la columna CANT (cantidad), como número. Si no podés leer con claridad el código o la cantidad de una línea, no la incluyas en el resultado.' }
+          ]
+        }]
+      })
+    });
+    const data = await response.json();
+    const textBlock = (data.content || []).map(b => b.text || '').join('\n');
+    const clean = textBlock.replace(/```json|```/g, '').trim();
+    const items = JSON.parse(clean);
+
+    let matched = 0;
+    const rows = document.querySelectorAll('#rec_items_body tr');
+    for(const it of items){
+      const codigoLeido = normTxt(it.codigo);
+      if(!codigoLeido) continue;
+      const cantidadLeida = Math.max(0, Math.round(Number(it.cantidad)||0));
+      rows.forEach(row=>{
+        const productId = row.dataset.productid;
+        const prod = productos.find(p=>p.id===productId);
+        if(prod && prod.codigo && normTxt(prod.codigo) === codigoLeido){
+          const inp = row.querySelector('.rec-input');
+          if(inp){ inp.value = cantidadLeida; matched++; }
+        }
+      });
+    }
+    const total = ped ? ped.items.length : rows.length;
+    if(statusEl){
+      statusEl.innerHTML = matched > 0
+        ? `<div class="meta">Se completaron ${matched} de ${total} producto(s) según la foto. Revisá los números antes de confirmar.</div>`
+        : `<div class="meta" style="color:var(--warn);">No se pudo emparejar ningún código con la foto. Cargá las cantidades a mano.</div>`;
+    }
+  }catch(err){
+    if(statusEl) statusEl.innerHTML = `<div class="meta" style="color:var(--danger);">No se pudo leer la factura automáticamente. Cargá las cantidades a mano.</div>`;
+  }
+}
+
+function confirmarRecepcion(pedidoId){
+  const ped = pedidos.find(x=>x.id===pedidoId);
+  if(!ped) return;
+  const inputs = document.querySelectorAll('.rec-input');
+  const recibidos = {};
+  inputs.forEach(inp=>{
+    const idx = Number(inp.dataset.idx);
+    recibidos[idx] = Math.max(0, Math.round(Number(inp.value)||0));
+  });
+
+  const totalItemsOriginal = ped.items.length;
+  const nuevosItems = [];
+  ped.items.forEach((it, idx)=>{
+    const recibido = recibidos[idx] !== undefined ? recibidos[idx] : 0;
+    const pedidoQty = Number(it.cantidad)||0;
+    if(recibido > 0){
+      const p = productos.find(x=>x.id===it.productId);
+      if(p) p.stock = (Number(p.stock)||0) + recibido;
+    }
+    const faltante = pedidoQty - recibido;
+    if(faltante > 0){
+      nuevosItems.push({ ...it, cantidad: faltante });
+    }
+  });
+  const productosFaltantes = nuevosItems.length;
+  const productosLlegaron = totalItemsOriginal - productosFaltantes;
+
+  ped.items = nuevosItems;
+  if(ped.items.length === 0){
+    ped.estado = 'recibido';
+    ped.fechaRecibido = today();
+  }else{
+    ped.notas = (ped.notas ? ped.notas + ' | ' : '') + `Recepción parcial ${today()}: llegaron ${productosLlegaron} producto(s), faltan ${productosFaltantes} producto(s).`;
+  }
+
+  saveProductos();
+  savePedidos();
+  closeModal();
+  render();
+  showToast(ped.items.length === 0 ? 'Pedido recibido completo: stock actualizado' : `Recepción registrada. Quedan ${ped.items.length} producto(s) pendientes.`);
+}
+
+function deletePedido(id){
+  if(!confirm('¿Eliminar este pedido?')) return;
+  pedidos = pedidos.filter(x=>x.id!==id);
+  openPedidoIds.delete(id);
+  savePedidos();
+  render();
+  showToast('Pedido eliminado');
+}
+
+let nuevoPedidoItems = [];
+function openNuevoPedidoModal(){
+  if(productos.length === 0){
+    showToast('Primero agregá productos en la pestaña Stock');
+    return;
+  }
+  nuevoPedidoItems = [];
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Nuevo pedido</h3>
+      <div class="field"><label>Proveedor</label><input id="np_proveedor" list="prov_datalist" type="text" placeholder="Ej: Distribuidora Sur"></div>
+      <datalist id="prov_datalist">${proveedores.map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
+      <div class="item-row-add">
+        <div class="field" style="flex:2; min-width:140px;">
+          <label>Producto</label>
+          <select id="np_producto">
+            ${productos.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p=>`<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="max-width:90px;">
+          <label>Cantidad</label>
+          <input id="np_cantidad" type="number" min="1" value="1">
+        </div>
+        <button class="btn secondary small" onclick="addItemToPedido()">Agregar</button>
+      </div>
+      <ul class="pedido-items-list" id="np_items_list"></ul>
+      <div class="field"><label>Notas</label><textarea id="np_notas" rows="2" placeholder="Opcional"></textarea></div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="guardarPedido()">Guardar pedido</button>
+      </div>
+    </div>
+  </div>`;
+  renderNpItemsList();
+}
+
+function addItemToPedido(){
+  const sel = document.getElementById('np_producto');
+  const cant = Math.max(1, Math.round(Number(document.getElementById('np_cantidad').value)||1));
+  const p = productos.find(x=>x.id === sel.value);
+  if(!p) return;
+  const existing = nuevoPedidoItems.find(i=>i.productId===p.id);
+  if(existing) existing.cantidad += cant;
+  else nuevoPedidoItems.push({ productId:p.id, nombre:p.nombre, cantidad:cant, fechaAgregado: today() });
+  renderNpItemsList();
+}
+function renderNpItemsList(){
+  const ul = document.getElementById('np_items_list');
+  if(!ul) return;
+  ul.innerHTML = nuevoPedidoItems.map((it,idx)=>
+    `<li><span>${esc(it.nombre)}</span><span>x${it.cantidad} <button class="icon-btn" style="width:22px;height:22px;font-size:12px;margin-left:8px;" onclick="removeNpItem(${idx})">✕</button></span></li>`
+  ).join('') || '<li style="color:#63676e;">Todavía no agregaste productos</li>';
+}
+function removeNpItem(idx){
+  nuevoPedidoItems.splice(idx,1);
+  renderNpItemsList();
+}
+function guardarPedido(){
+  if(nuevoPedidoItems.length === 0){ showToast('Agregá al menos un producto al pedido'); return; }
+  pedidos.push({
+    id: uid(),
+    proveedor: document.getElementById('np_proveedor').value.trim(),
+    fecha: today(),
+    items: nuevoPedidoItems,
+    notas: document.getElementById('np_notas').value.trim(),
+    estado: 'pendiente',
+    enviado: false
+  });
+  savePedidos();
+  closeModal();
+  render();
+  showToast('Pedido guardado');
+}
+
+/* ================= PROVEEDORES ================= */
+function renderProveedores(){
+  let html = `
+  <div class="toolbar" style="margin-bottom:10px;">
+    <div class="spacer"></div>
+    <button class="btn btn-yellow" title="Cuando esta función esté lista, va a buscar listas nuevas en Gmail automáticamente" onclick="actualizarListasGmail()">Actualizar listas</button>
+    <label class="btn btn-yellow" style="cursor:pointer; margin:0; display:inline-block;">
+      Importar varias listas
+      <input type="file" accept=".xlsx,.xls,.csv,.xlsm" multiple style="display:none;" onchange="abrirImportacionLote(this)">
+    </label>
+    <button class="btn secondary" onclick="openProductoModal()">+ Agregar producto</button>
+    <button class="btn" onclick="openProveedorModal()">+ Agregar proveedor</button>
+  </div>
+  <div class="dash-toggle" onclick="toggleGlobalPctVisible()">${globalPctVisible ? '▾' : '▸'} % Pago con tarjeta / IVA</div>
+  ${globalPctVisible ? `
+  <div class="global-pct-row">
+    <div class="global-pct-box">
+      <label>% Pago con tarjeta</label>
+      <div class="pct-item"><input type="number" step="1" value="${globalPctTarjeta}" onchange="updateGlobalPct('tarjeta', this.value)">%</div>
+    </div>
+    <div class="global-pct-box">
+      <label>% IVA</label>
+      <div class="pct-item"><input type="number" step="1" value="${globalPctIva}" onchange="updateGlobalPct('iva', this.value)">%</div>
+    </div>
+    <div class="global-pct-note">Estos dos porcentajes se aplican a <b>todos</b> los proveedores, sumados a los descuentos y ganancias individuales de cada uno.</div>
+  </div>` : ''}`;
+
+  if(proveedores.length === 0){
+    html += `<div class="empty"><div class="big">No cargaste proveedores todavía</div>
+      <div>Agregá un proveedor con su descuento y tu margen de ganancia. Después vas a poder importar sus listas de precios en Excel o CSV y que se carguen solas.</div></div>`;
+    return html;
+  }
+
+  html += `<div class="prov-grid">`;
+  for(const pr of proveedores){
+    const cantProductos = productos.filter(p=>p.proveedorId === pr.id).length;
+    const descuentos = getDescuentos(pr);
+    const ganancias = getGanancias(pr);
+    const expandida = proveedoresExpandidos.has(pr.id);
+    html += `<div class="prov-card" data-prov-id="${pr.id}">
+      <div class="prov-card-head" style="cursor:pointer;" onclick="toggleProveedorCard('${pr.id}')">
+        <div class="name">${expandida?'▾':'▸'} ${esc(pr.nombre)}</div>
+        <div class="meta">Desc. ${formatPctList(descuentos)} · Gan. ${formatPctList(ganancias)} · ${cantProductos} producto(s)</div>
+      </div>
+      ${expandida ? `
+      <div class="prov-info" style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; margin-top:8px;">
+        <div class="prov-pct-edit" style="flex:1; min-width:200px;">
+          <div class="pct-group">
+            <label>Descuento</label>
+            <div class="pct-inputs">
+              ${descuentos.map((d,i)=>`<span class="pct-item"><input type="number" step="1" value="${Number(d)||0}" onchange="updateProveedorPct('${pr.id}','descuentos',${i},this.value)">%${i<descuentos.length-1?'<span class="pct-plus">+</span>':''}</span>`).join('')}
+              <button class="icon-btn small" title="Agregar otro descuento" onclick="addProveedorPct('${pr.id}','descuentos')">+</button>
+              ${descuentos.length>1 ? `<button class="icon-btn small" title="Quitar el último" onclick="removeProveedorPct('${pr.id}','descuentos')">−</button>` : ''}
+            </div>
+          </div>
+          <div class="pct-group">
+            <label>Ganancia</label>
+            <div class="pct-inputs">
+              ${ganancias.map((g,i)=>`<span class="pct-item"><input type="number" step="1" value="${Number(g)||0}" onchange="updateProveedorPct('${pr.id}','ganancias',${i},this.value)">%${i<ganancias.length-1?'<span class="pct-plus">+</span>':''}</span>`).join('')}
+              <button class="icon-btn small" title="Agregar otra ganancia" onclick="addProveedorPct('${pr.id}','ganancias')">+</button>
+              ${ganancias.length>1 ? `<button class="icon-btn small" title="Quitar la última" onclick="removeProveedorPct('${pr.id}','ganancias')">−</button>` : ''}
+            </div>
+          </div>
+          <div class="meta" style="margin-top:6px;">${cantProductos} producto(s) vinculados${pr.ultimaImportacion ? ' · Última lista importada: ' + pr.ultimaImportacion : ''}${pr.contacto ? ' · ' + esc(pr.contacto) : ''}${pr.whatsapp ? ' · WhatsApp: ' + esc(pr.whatsapp) : ''}</div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
+          <button class="btn secondary small" onclick="openImportModal('${pr.id}')">Importar lista</button>
+          <button class="btn btn-yellow small" title="Vuelve al estado de este proveedor antes de su última importación" onclick="volverListaAnteriorProveedor('${pr.id}')">Volver a lista anterior</button>
+        </div>
+      </div>
+      <div class="row-actions" style="justify-content:flex-start; flex-wrap:wrap; margin-top:8px;">
+        <button class="icon-btn" title="Editar" onclick="openProveedorModal('${pr.id}')">✎</button>
+        <button class="icon-btn" title="Eliminar" onclick="deleteProveedor('${pr.id}')">🗑</button>
+      </div>` : ''}
+    </div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function toggleGlobalPctVisible(){
+  globalPctVisible = !globalPctVisible;
+  render();
+}
+
+function toggleProveedorCard(prId){
+  const yaEstaba = proveedoresExpandidos.has(prId);
+  if(yaEstaba) proveedoresExpandidos.delete(prId);
+  else proveedoresExpandidos.add(prId);
+  render();
+  if(!yaEstaba && proveedoresExpandidos.size === 1){
+    setTimeout(()=>{
+      const el = document.querySelector(`.prov-card[data-prov-id="${prId}"]`);
+      if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
+    }, 50);
+  }
+}
+
+function updateProveedorPct(provId, field, idx, value){
+  const pr = proveedores.find(x=>x.id===provId);
+  if(!pr) return;
+  if(!Array.isArray(pr[field])) pr[field] = field==='descuentos' ? getDescuentos(pr) : getGanancias(pr);
+  pr[field][idx] = Number(value)||0;
+  recalcularPreciosProveedor(pr);
+  saveProveedores();
+  saveProductos();
+  render();
+}
+function addProveedorPct(provId, field){
+  const pr = proveedores.find(x=>x.id===provId);
+  if(!pr) return;
+  if(!Array.isArray(pr[field])) pr[field] = field==='descuentos' ? getDescuentos(pr) : getGanancias(pr);
+  pr[field].push(0);
+  saveProveedores();
+  render();
+}
+function removeProveedorPct(provId, field){
+  const pr = proveedores.find(x=>x.id===provId);
+  if(!pr) return;
+  if(!Array.isArray(pr[field]) || pr[field].length<=1) return;
+  pr[field].pop();
+  recalcularPreciosProveedor(pr);
+  saveProveedores();
+  saveProductos();
+  render();
+}
+
+/* ================= MÉTRICAS ================= */
+function calcularMetricasProveedor(pr){
+  const nombreNorm = normTxt(pr.nombre);
+  const pedidosProv = pedidos.filter(p => normTxt(p.proveedor) === nombreNorm);
+  const recibidos = pedidosProv.filter(p => p.estado === 'recibido');
+  const pendientes = pedidosProv.filter(p => p.estado === 'pendiente');
+
+  let totalComprado = 0, totalVenta = 0;
+  for(const ped of recibidos){
+    for(const it of ped.items){
+      const prod = productos.find(x=>x.id===it.productId);
+      const costoUnit = prod ? Number(prod.costo)||0 : 0;
+      const ventaUnit = prod ? Number(prod.venta)||0 : 0;
+      const cant = Number(it.cantidad)||0;
+      totalComprado += costoUnit * cant;
+      totalVenta += ventaUnit * cant;
+    }
+  }
+  const totalGanancia = totalVenta - totalComprado;
+  const margenPct = totalComprado > 0 ? (totalGanancia/totalComprado)*100 : null;
+
+  let totalPendiente = 0;
+  for(const ped of pendientes){
+    for(const it of ped.items){
+      const prod = productos.find(x=>x.id===it.productId);
+      const costoUnit = prod ? Number(prod.costo)||0 : 0;
+      totalPendiente += costoUnit * (Number(it.cantidad)||0);
+    }
+  }
+
+  const productosVinculados = productos.filter(p=>p.proveedorId === pr.id);
+  const valorStockActual = productosVinculados.reduce((acc,p)=> acc + (Number(p.stock)||0)*(Number(p.costo)||0), 0);
+  const sinEnviar = pendientes.filter(p=>!p.enviado).length;
+
+  return {
+    pedidosTotales: pedidosProv.length,
+    pedidosRecibidos: recibidos.length,
+    pedidosPendientes: pendientes.length,
+    pedidosSinEnviar: sinEnviar,
+    totalComprado, totalVenta, totalGanancia, margenPct,
+    totalPendiente,
+    productosVinculados: productosVinculados.length,
+    valorStockActual,
+    ultimaImportacion: pr.ultimaImportacion || null,
+  };
+}
+
+function mesKeyDe(fecha){ return fecha ? String(fecha).slice(0,7) : null; }
+function mesAnteriorKey(mesKey){
+  const [y,m] = mesKey.split('-').map(Number);
+  const d = new Date(y, m-2, 1);
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+}
+function nombreMes(mesKey){
+  const [y,m] = mesKey.split('-').map(Number);
+  const nombres = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  return nombres[m-1] + ' ' + y;
+}
+function calcularTotalesPorMes(){
+  const totales = {};
+  for(const ped of pedidos){
+    if(ped.estado !== 'recibido') continue;
+    const key = mesKeyDe(ped.fechaRecibido || ped.fecha);
+    if(!key) continue;
+    if(!totales[key]) totales[key] = { compras:0, ventas:0 };
+    for(const it of ped.items){
+      const prod = productos.find(x=>x.id===it.productId);
+      const costoUnit = prod ? Number(prod.costo)||0 : 0;
+      const ventaUnit = prod ? Number(prod.venta)||0 : 0;
+      const cant = Number(it.cantidad)||0;
+      totales[key].compras += costoUnit * cant;
+      totales[key].ventas += ventaUnit * cant;
+    }
+  }
+  return totales;
+}
+function flechaComparativa(actual, anterior, invertirColor){
+  if(anterior === 0 && actual === 0) return '';
+  if(actual === anterior) return '';
+  const subio = actual > anterior;
+  const colorSubio = invertirColor ? 'var(--ink-soft)' : 'var(--good)';
+  const colorBajo = invertirColor ? 'var(--ink-soft)' : 'var(--danger)';
+  const color = subio ? colorSubio : colorBajo;
+  const flecha = subio ? '▲' : '▼';
+  const pct = anterior > 0 ? Math.abs(((actual-anterior)/anterior)*100).toFixed(0)+'%' : '';
+  return ` <span style="color:${color}; font-size:0.6em; vertical-align:middle;" title="Respecto al mes pasado${pct?' ('+pct+')':''}">${flecha}</span>`;
+}
+
+let metricasExpandidas = new Set();
+function toggleMetricaCard(prId){
+  if(metricasExpandidas.has(prId)) metricasExpandidas.delete(prId);
+  else metricasExpandidas.add(prId);
+  render();
+}
+
+function toggleMetricasResumen(){
+  metricasResumenVisible = !metricasResumenVisible;
+  render();
+}
+
+function renderMetricas(){
+  if(proveedores.length === 0){
+    return `<div class="empty"><div class="big">Todavía no hay proveedores cargados</div>
+      <div>Las métricas se arman a partir de los proveedores y los pedidos que vayas registrando.</div></div>`;
+  }
+
+  const datos = proveedores.map(pr => ({ pr, m: calcularMetricasProveedor(pr) }));
+
+  const totalGeneralComprado = datos.reduce((a,d)=>a+d.m.totalComprado, 0);
+  const totalGeneralGanancia = datos.reduce((a,d)=>a+d.m.totalGanancia, 0);
+  const totalGeneralPendiente = datos.reduce((a,d)=>a+d.m.totalPendiente, 0);
+  const margenGeneralPct = totalGeneralComprado > 0 ? (totalGeneralGanancia/totalGeneralComprado)*100 : null;
+
+  const porMes = calcularTotalesPorMes();
+  const keyActual = mesKeyDe(today());
+  const keyAnterior = mesAnteriorKey(keyActual);
+  const actual = porMes[keyActual] || { compras:0, ventas:0 };
+  const anterior = porMes[keyAnterior] || { compras:0, ventas:0 };
+  const gananciaActual = actual.ventas - actual.compras;
+  const gananciaAnterior = anterior.ventas - anterior.compras;
+
+  const sorters = {
+    comprado: (a,b)=> b.m.totalComprado - a.m.totalComprado,
+    ganancia: (a,b)=> b.m.totalGanancia - a.m.totalGanancia,
+    margen: (a,b)=> (b.m.margenPct??-Infinity) - (a.m.margenPct??-Infinity),
+    pedidos: (a,b)=> b.m.pedidosTotales - a.m.pedidosTotales,
+  };
+  datos.sort(sorters[metricasSortBy] || sorters.comprado);
+
+  const maxComprado = Math.max(1, ...datos.map(d=>d.m.totalComprado));
+
+  let html = `
+  <div class="dash-toggle" onclick="toggleMetricasResumen()">${metricasResumenVisible ? '▾' : '▸'} Resumen general</div>
+  ${metricasResumenVisible ? `
+  <div class="dash">
+    <div class="card"><div class="num mono">${money(totalGeneralComprado)}</div><div class="lbl">Comprado total (histórico)</div></div>
+    <div class="card"><div class="num mono">${money(totalGeneralGanancia)}</div><div class="lbl">Ganancia generada (histórico)</div></div>
+    <div class="card"><div class="num">${margenGeneralPct!=null ? margenGeneralPct.toFixed(1)+'%' : '—'}</div><div class="lbl">Margen promedio</div></div>
+    <div class="card warn"><div class="num mono">${money(totalGeneralPendiente)}</div><div class="lbl">En pedidos pendientes</div></div>
+  </div>
+  <div class="step-label">Este mes (${nombreMes(keyActual)}) vs. ${nombreMes(keyAnterior)}</div>
+  <div class="dash" style="margin-bottom:18px;">
+    <div class="card"><div class="num mono">${money(actual.compras)}${flechaComparativa(actual.compras, anterior.compras, true)}</div><div class="lbl">Compras este mes</div></div>
+    <div class="card"><div class="num mono">${money(actual.ventas)}${flechaComparativa(actual.ventas, anterior.ventas, false)}</div><div class="lbl">Ventas este mes</div></div>
+    <div class="card"><div class="num mono">${money(gananciaActual)}${flechaComparativa(gananciaActual, gananciaAnterior, false)}</div><div class="lbl">Ganancia este mes</div></div>
+  </div>` : ''}
+  <div class="toolbar">
+    <div class="spacer"></div>
+    <select onchange="metricasSortBy=this.value; render()">
+      <option value="comprado" ${metricasSortBy==='comprado'?'selected':''}>Ordenar por: Total comprado</option>
+      <option value="ganancia" ${metricasSortBy==='ganancia'?'selected':''}>Ordenar por: Ganancia generada</option>
+      <option value="margen" ${metricasSortBy==='margen'?'selected':''}>Ordenar por: Margen %</option>
+      <option value="pedidos" ${metricasSortBy==='pedidos'?'selected':''}>Ordenar por: Cantidad de pedidos</option>
+    </select>
+  </div>`;
+
+  for(const {pr, m} of datos){
+    const barPct = Math.round((m.totalComprado / maxComprado) * 100);
+    const expandida = metricasExpandidas.has(pr.id);
+    html += `<div class="metric-card">
+      <div class="metric-head" style="cursor:pointer;" onclick="toggleMetricaCard('${pr.id}')">
+        <div class="metric-name">${expandida ? '▾' : '▸'} ${esc(pr.nombre)}</div>
+        <div class="metric-comprado">${money(m.totalComprado)}</div>
+      </div>
+      <div class="metric-bar-wrap"><div class="metric-bar" style="width:${barPct}%;"></div></div>
+      ${expandida ? `
+      <div class="metric-stats">
+        <div class="metric-stat"><span class="metric-stat-lbl">Ganancia generada</span><span class="metric-stat-val" style="color:var(--good);">${money(m.totalGanancia)}</span></div>
+        <div class="metric-stat"><span class="metric-stat-lbl">Margen</span><span class="metric-stat-val">${m.margenPct!=null ? m.margenPct.toFixed(1)+'%' : '—'}</span></div>
+        <div class="metric-stat"><span class="metric-stat-lbl">Pedidos</span><span class="metric-stat-val">${m.pedidosRecibidos} recibidos · ${m.pedidosPendientes} pendientes${m.pedidosSinEnviar>0 ? ` (${m.pedidosSinEnviar} sin enviar)`:''}</span></div>
+        <div class="metric-stat"><span class="metric-stat-lbl">En pedidos pendientes</span><span class="metric-stat-val" style="color:var(--warn);">${money(m.totalPendiente)}</span></div>
+        <div class="metric-stat"><span class="metric-stat-lbl">Productos vinculados</span><span class="metric-stat-val">${m.productosVinculados}</span></div>
+        <div class="metric-stat"><span class="metric-stat-lbl">Valor de su stock actual</span><span class="metric-stat-val">${money(m.valorStockActual)}</span></div>
+        <div class="metric-stat"><span class="metric-stat-lbl">Última lista importada</span><span class="metric-stat-val">${m.ultimaImportacion || '—'}</span></div>
+      </div>` : ''}
+    </div>`;
+  }
+  return html;
+}
+
+/* ================= CUENTAS CORRIENTES ================= */
+let cuentasExpandidas = new Set();
+function toggleCuentaCard(prId){
+  const yaEstaba = cuentasExpandidas.has(prId);
+  if(yaEstaba) cuentasExpandidas.delete(prId);
+  else cuentasExpandidas.add(prId);
+  render();
+  if(!yaEstaba && cuentasExpandidas.size === 1){
+    setTimeout(()=>{
+      const el = document.querySelector(`.metric-card[data-prov-cuenta="${prId}"]`);
+      if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
+    }, 50);
+  }
+}
+
+function toggleCuentasResumen(){
+  cuentasResumenVisible = !cuentasResumenVisible;
+  render();
+}
+
+function saldoProveedor(prId){
+  return cuentasMovimientos
+    .filter(m => m.proveedorId === prId)
+    .reduce((acc,m) => acc + (m.tipo === 'cargo' ? m.monto : -m.monto), 0);
+}
+
+let cuentasFiltroMes = '';
+let cuentasFiltroAnio = '';
+
+function renderCuentas(){
+  if(proveedores.length === 0){
+    return `<div class="empty"><div class="big">Todavía no hay proveedores cargados</div>
+      <div>Agregá proveedores en esa pestaña para poder llevarles la cuenta corriente acá.</div></div>`;
+  }
+
+  const saldos = proveedores.map(pr => ({ pr, saldo: saldoProveedor(pr.id) }));
+  const totalAdeudado = saldos.reduce((acc,s)=> acc + Math.max(0, s.saldo), 0);
+  const totalAFavor = saldos.reduce((acc,s)=> acc + Math.max(0, -s.saldo), 0);
+
+  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const aniosSet = new Set(cuentasMovimientos.map(m => m.fecha.slice(0,4)));
+  aniosSet.add(today().slice(0,4));
+  const anios = [...aniosSet].sort((a,b)=> b.localeCompare(a));
+
+  let html = `
+  <div class="dash-toggle" onclick="toggleCuentasResumen()">${cuentasResumenVisible ? '▾' : '▸'} Resumen general</div>
+  ${cuentasResumenVisible ? `
+  <div class="dash">
+    <div class="card warn"><div class="num mono">${money(totalAdeudado)}</div><div class="lbl">Total que les debemos</div></div>
+    <div class="card"><div class="num mono">${money(totalAFavor)}</div><div class="lbl">Total a nuestro favor</div></div>
+  </div>` : ''}
+  <div class="toolbar">
+    <div class="spacer"></div>
+    <select onchange="cuentasFiltroMes=this.value; render()">
+      <option value="">Todos los meses</option>
+      ${meses.map((m,i)=>`<option value="${String(i+1).padStart(2,'0')}" ${cuentasFiltroMes===String(i+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}
+    </select>
+    <select onchange="cuentasFiltroAnio=this.value; render()">
+      <option value="">Todos los años</option>
+      ${anios.map(a=>`<option value="${a}" ${cuentasFiltroAnio===a?'selected':''}>${a}</option>`).join('')}
+    </select>
+  </div>`;
+
+  saldos.sort((a,b)=> b.saldo - a.saldo);
+
+  for(const {pr, saldo} of saldos){
+    const expandida = cuentasExpandidas.has(pr.id);
+    const movsAsc = cuentasMovimientos.filter(m=>m.proveedorId===pr.id).sort((a,b)=> a.fecha.localeCompare(b.fecha) || String(a.id).localeCompare(String(b.id)));
+    let corrido = 0;
+    const movsConSaldo = movsAsc.map(m=>{
+      corrido += (m.tipo === 'cargo' ? m.monto : -m.monto);
+      return { ...m, saldoCorrido: corrido };
+    });
+    const movsFiltrados = movsConSaldo
+      .filter(m => (!cuentasFiltroMes || m.fecha.slice(5,7) === cuentasFiltroMes) && (!cuentasFiltroAnio || m.fecha.slice(0,4) === cuentasFiltroAnio));
+      // ya quedan en orden ascendente (los agregados nuevos aparecen abajo)
+
+    const colorSaldo = saldo > 0 ? 'var(--danger)' : (saldo < 0 ? 'var(--good)' : 'var(--ink-soft)');
+    const etiquetaSaldo = saldo > 0 ? 'Le debemos' : (saldo < 0 ? 'A nuestro favor' : 'Al día');
+    html += `<div class="metric-card metric-card-tight" data-prov-cuenta="${pr.id}">
+      <div class="metric-head" style="cursor:pointer;" onclick="toggleCuentaCard('${pr.id}')">
+        <div class="metric-name">${expandida?'▾':'▸'} ${esc(pr.nombre)}</div>
+        <div class="metric-comprado" style="color:${colorSaldo};">${etiquetaSaldo}: ${money(Math.abs(saldo))}</div>
+      </div>
+      ${expandida ? `
+        <div class="row-actions" style="justify-content:flex-start; margin:10px 0;">
+          <button class="btn small secondary" onclick="openMovimientoModal('${pr.id}','cargo')">+ Registrar compra</button>
+          <button class="btn small secondary" onclick="openMovimientoModal('${pr.id}','pago')">+ Registrar pago</button>
+        </div>
+        ${movsFiltrados.length === 0 ? `<div class="meta">No hay movimientos para lo que estás filtrando.</div>` : `
+        <div class="preview-wrap" style="max-height:260px;"><table><thead><tr>
+          <th>Fecha</th><th>Tipo</th><th>Monto</th><th>Nº de factura</th><th>Fecha de factura</th><th></th><th>Saldo</th><th>Nota</th>
+        </tr></thead><tbody>
+          ${movsFiltrados.map(m=>`<tr>
+            <td>${m.fecha}</td>
+            <td><span class="badge ${m.tipo==='cargo'?'warn':'good'}">${m.tipo==='cargo'?'Compra':'Pago'}</span></td>
+            <td class="price">${money(m.monto)}</td>
+            <td><input type="text" value="${esc(m.nota||'')}" placeholder="Escribir..." style="width:110px; padding:5px; border:1px solid var(--line); border-radius:6px;" onchange="updateMovimientoNumeroFactura('${m.id}', this.value)"></td>
+            <td>
+              ${m.tipo === 'cargo' ? `
+              <div style="display:flex; align-items:center; gap:3px;">
+                <button type="button" class="icon-btn" style="width:20px; height:20px; font-size:11px;" title="Un día antes" onclick="ajustarFechaFactura('${m.id}', -1)">‹</button>
+                <span class="mono" style="font-size:12px;">${m.facturaFecha || m.fecha}</span>
+                <button type="button" class="icon-btn" style="width:20px; height:20px; font-size:11px;" title="Un día después" onclick="ajustarFechaFactura('${m.id}', 1)">›</button>
+              </div>` : '—'}
+            </td>
+            <td><button class="icon-btn" title="Eliminar movimiento" onclick="eliminarMovimiento('${m.id}')">🗑</button></td>
+            <td class="price" style="color:${m.saldoCorrido>0?'var(--danger)':(m.saldoCorrido<0?'var(--good)':'var(--ink-soft)')};">${money(m.saldoCorrido)}</td>
+            <td><input type="text" value="${esc(m.notaExtra||'')}" placeholder="Escribir..." style="width:130px; padding:5px; border:1px solid var(--line); border-radius:6px;" onchange="updateMovimientoNota('${m.id}', this.value)"></td>
+          </tr>`).join('')}
+        </tbody></table></div>`}
+      ` : ''}
+    </div>`;
+  }
+  return html;
+}
+
+function openMovimientoModal(prId, tipo){
+  const pr = proveedores.find(x=>x.id===prId);
+  if(!pr) return;
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>${tipo==='cargo' ? 'Registrar compra' : 'Registrar pago'}</h3>
+      <div class="subtitle">${esc(pr.nombre)}</div>
+      <div class="field"><label>Monto</label><input id="mov_monto" type="number" step="0.01" min="0" placeholder="0"></div>
+      <div class="field"><label>Fecha</label><input id="mov_fecha" type="date" value="${today()}"></div>
+      <div class="field"><label>Nº de factura</label><input id="mov_nota" type="text" placeholder="Opcional, ej: 0001-00001234"></div>
+      ${tipo === 'cargo' ? `<div class="global-pct-note">La fecha de factura arranca igual a la Fecha de arriba — después la podés correr día por día con las flechitas de la tabla.</div>` : ''}
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="guardarMovimiento('${prId}','${tipo}')">Guardar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function guardarMovimiento(prId, tipo){
+  const monto = Number(document.getElementById('mov_monto').value);
+  if(!monto || monto <= 0){ showToast('Poné un monto válido'); return; }
+  const fecha = document.getElementById('mov_fecha').value || today();
+  const nota = document.getElementById('mov_nota').value.trim();
+  cuentasMovimientos.push({ id: uid(), proveedorId: prId, tipo, monto, fecha, nota, facturaFecha: tipo==='cargo' ? fecha : '', notaExtra: '' });
+  saveCuentas();
+  closeModal();
+  cuentasExpandidas.add(prId);
+  render();
+  showToast(tipo==='cargo' ? 'Compra registrada' : 'Pago registrado');
+}
+
+function updateMovimientoNumeroFactura(movId, value){
+  const m = cuentasMovimientos.find(x=>x.id===movId);
+  if(!m) return;
+  m.nota = value;
+  saveCuentas();
+}
+
+function ajustarFechaFactura(movId, delta){
+  const m = cuentasMovimientos.find(x=>x.id===movId);
+  if(!m) return;
+  const base = m.facturaFecha || m.fecha;
+  const d = new Date(base + 'T00:00:00');
+  d.setDate(d.getDate() + delta);
+  m.facturaFecha = d.toISOString().slice(0,10);
+  saveCuentas();
+  render();
+}
+
+function updateMovimientoNota(movId, value){
+  const m = cuentasMovimientos.find(x=>x.id===movId);
+  if(!m) return;
+  m.notaExtra = value;
+  saveCuentas();
+}
+
+function eliminarMovimiento(movId){
+  if(!confirm('¿Eliminar este movimiento de la cuenta corriente?')) return;
+  cuentasMovimientos = cuentasMovimientos.filter(m=>m.id!==movId);
+  saveCuentas();
+  render();
+  showToast('Movimiento eliminado');
+}
+
+let modalDescuentos = [0];
+let modalGanancias = [0];
+
+function openProveedorModal(id){
+  const editing = id ? proveedores.find(x=>x.id===id) : null;
+  modalDescuentos = editing ? [...getDescuentos(editing)] : [0];
+  modalGanancias = editing ? [...getGanancias(editing)] : [0];
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>${editing ? 'Editar proveedor' : 'Nuevo proveedor'}</h3>
+      <div class="field"><label>Nombre *</label><input id="pv_nombre" type="text" value="${editing?esc(editing.nombre):''}" placeholder="Ej: Distribuidora Sur"></div>
+      <div id="pv_pct_fields"></div>
+      <div class="field"><label>WhatsApp del proveedor</label><input id="pv_whatsapp" type="text" value="${editing?esc(editing.whatsapp||''):''}" placeholder="Ej: 11 2345 6789 (opcional)"></div>
+      <div class="field"><label>Contacto</label><input id="pv_contacto" type="text" value="${editing?esc(editing.contacto||''):''}" placeholder="Email u otro dato (opcional)"></div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="saveProveedor(${editing?`'${editing.id}'`:'null'})">Guardar</button>
+      </div>
+    </div>
+  </div>`;
+  renderModalPctFields();
+}
+
+function renderModalPctFields(){
+  const div = document.getElementById('pv_pct_fields');
+  if(!div) return;
+  div.innerHTML = `
+    <div class="field">
+      <label>Descuento que te hacen (%) — podés sumar más de uno si viene en cascada</label>
+      <div class="pct-inputs">
+        ${modalDescuentos.map((d,i)=>`<span class="pct-item"><input type="number" step="1" value="${d}" onchange="modalDescuentos[${i}]=Number(this.value)||0">%${i<modalDescuentos.length-1?'<span class="pct-plus">+</span>':''}</span>`).join('')}
+        <button class="icon-btn small" onclick="modalDescuentos.push(0); renderModalPctFields();">+</button>
+        ${modalDescuentos.length>1 ? `<button class="icon-btn small" onclick="modalDescuentos.pop(); renderModalPctFields();">−</button>` : ''}
+      </div>
+    </div>
+    <div class="field">
+      <label>Ganancia que querés agregar (%) — podés sumar más de una</label>
+      <div class="pct-inputs">
+        ${modalGanancias.map((g,i)=>`<span class="pct-item"><input type="number" step="1" value="${g}" onchange="modalGanancias[${i}]=Number(this.value)||0">%${i<modalGanancias.length-1?'<span class="pct-plus">+</span>':''}</span>`).join('')}
+        <button class="icon-btn small" onclick="modalGanancias.push(0); renderModalPctFields();">+</button>
+        ${modalGanancias.length>1 ? `<button class="icon-btn small" onclick="modalGanancias.pop(); renderModalPctFields();">−</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function saveProveedor(id){
+  const nombre = document.getElementById('pv_nombre').value.trim();
+  if(!nombre){ showToast('Poné un nombre para el proveedor'); return; }
+  const data = {
+    nombre,
+    descuentos: modalDescuentos.map(d=>Number(d)||0),
+    ganancias: modalGanancias.map(g=>Number(g)||0),
+    whatsapp: document.getElementById('pv_whatsapp').value.trim(),
+    contacto: document.getElementById('pv_contacto').value.trim(),
+  };
+  let actualizadosPrecio = 0;
+  if(id){
+    const pr = proveedores.find(x=>x.id===id);
+    Object.assign(pr, data);
+    for(const p of productos){ if(p.proveedorId === id) p.proveedor = nombre; }
+    actualizadosPrecio = recalcularPreciosProveedor(pr);
+    saveProductos();
+  }else{
+    proveedores.push({ id: uid(), ...data });
+  }
+  saveProveedores();
+  closeModal();
+  render();
+  showToast(actualizadosPrecio > 0 ? `Proveedor guardado. Se actualizó el precio de ${actualizadosPrecio} producto(s).` : 'Proveedor guardado');
+}
+
+function deleteProveedor(id){
+  const pr = proveedores.find(x=>x.id===id);
+  if(!pr) return;
+  if(!confirm(`¿Eliminar "${pr.nombre}"? Los productos ya cargados no se van a borrar, solo se van a desvincular.`)) return;
+  proveedores = proveedores.filter(x=>x.id!==id);
+  for(const p of productos){ if(p.proveedorId === id) p.proveedorId = null; }
+  saveProveedores();
+  saveProductos();
+  render();
+  showToast('Proveedor eliminado');
+}
+
+/* ---- Importar lista de precios (Excel / CSV) ---- */
+let importCtx = null; // { proveedorId, allRows, startRow, rows(preview) }
+const IMPORT_LETTERS = ['A','B','C','D','E','F','G','H','I','J','K','L'];
+
+function excelCol(idx){ return IMPORT_LETTERS[idx] || ('Col' + (idx+1)); }
+
+let loteActivo = false;
+let loteArchivos = [];
+let loteIndex = 0;
+
+function openImportModal(proveedorId){
+  const pr = proveedores.find(x=>x.id===proveedorId);
+  if(!pr) return;
+  importCtx = { proveedorId, allRows: null, startRow: 2, rows: null };
+  const modal = document.getElementById('modalRoot');
+  const archivoSeccion = loteActivo
+    ? `<div class="global-pct-note" style="margin-bottom:10px;">Archivo ${loteIndex+1} de ${loteArchivos.length}: <b>${esc(loteArchivos[loteIndex] ? loteArchivos[loteIndex].name : '')}</b> (cargado automáticamente)</div>`
+    : `<div class="field">
+        <label>Archivo (.xlsx, .xls o .csv)</label>
+        <input id="im_file" type="file" accept=".xlsx,.xls,.csv" onchange="handleImportFile(this)">
+      </div>`;
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal wide">
+      <h3>Importar lista — ${esc(pr.nombre)}</h3>
+      <div class="subtitle">Subí el archivo Excel o CSV que te mandó el proveedor por mail. Descuento: <b>${formatPctList(getDescuentos(pr))}</b> · Ganancia: <b>${formatPctList(getGanancias(pr))}</b></div>
+      ${archivoSeccion}
+      <div id="im_mapping"></div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="${loteActivo ? 'cancelarLote()' : 'closeModal()'}">${loteActivo ? 'Cancelar todo el lote' : 'Cancelar'}</button>
+        ${loteActivo ? `<button class="btn secondary" onclick="saltarArchivoLote()">Saltar este archivo</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function changeImportSheet(sheetName){
+  importCtx.sheetName = sheetName;
+  importCtx.allRows = extractRows(importCtx.workbook, sheetName);
+  importCtx.startRow = importCtx.allRows.length > 1 ? 2 : 1;
+  importCtx.rows = null;
+  renderImportMapping();
+}
+
+function extractRows(wb, sheetName){
+  const sheet = wb.Sheets[sheetName];
+  return XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
+}
+
+async function cargarArchivoEnContexto(file){
+  if(!file) return;
+  try{
+    const buf = await file.arrayBuffer();
+    const data = new Uint8Array(buf);
+    const wb = XLSX.read(data, {type:'array'});
+    const primeraHoja = wb.SheetNames[0];
+    const rows = extractRows(wb, primeraHoja);
+    if(!rows || rows.length < 1){
+      showToast('No se encontraron filas en el archivo');
+      return;
+    }
+    importCtx.workbook = wb;
+    importCtx.sheetName = primeraHoja;
+    importCtx.allRows = rows;
+    const pr = proveedores.find(x=>x.id===importCtx.proveedorId);
+    importCtx.startRow = (pr && pr.importConfig && pr.importConfig.startRow) ? pr.importConfig.startRow : (rows.length > 1 ? 2 : 1);
+    renderImportMapping();
+  }catch(err){
+    showToast('No se pudo leer el archivo. Probá exportarlo como CSV.');
+  }
+}
+
+function handleImportFile(input){
+  const file = input.files[0];
+  cargarArchivoEnContexto(file);
+}
+
+function abrirImportacionLote(input){
+  const files = Array.from(input.files || []);
+  if(files.length === 0) return;
+  loteActivo = true;
+  loteArchivos = files;
+  loteIndex = 0;
+  closeModal();
+  iniciarSiguienteDelLote();
+}
+
+function iniciarSiguienteDelLote(){
+  if(!loteActivo) return;
+  if(loteIndex >= loteArchivos.length){
+    const cantidad = loteArchivos.length;
+    loteActivo = false;
+    loteArchivos = [];
+    loteIndex = 0;
+    closeModal();
+    currentTab = 'stock';
+    render();
+    showToast(`Listo: se procesaron ${cantidad} archivo(s).`);
+    return;
+  }
+  const file = loteArchivos[loteIndex];
+  const nombreArchivo = normTxt(file.name.replace(/\.(xlsx|xls|csv|xlsm)$/i, ''));
+  const sugeridos = proveedores.filter(pr => {
+    const n = normTxt(pr.nombre);
+    return n && (nombreArchivo.includes(n) || n.includes(nombreArchivo));
+  });
+  if(sugeridos.length === 1){
+    abrirImportLoteParaProveedor(sugeridos[0].id, file);
+  }else{
+    mostrarSelectorProveedorLote(file, sugeridos);
+  }
+}
+
+function mostrarSelectorProveedorLote(file, sugeridos){
+  window.__loteFileTemp = file;
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay">
+    <div class="modal">
+      <h3>¿A qué proveedor corresponde?</h3>
+      <div class="subtitle">Archivo ${loteIndex+1} de ${loteArchivos.length}: ${esc(file.name)}</div>
+      <div class="field"><label>Proveedor</label>
+        <select id="lote_proveedor_sel">
+          <option value="">— Elegir —</option>
+          ${proveedores.map(pr=>`<option value="${pr.id}" ${sugeridos.length===1 && sugeridos[0].id===pr.id ? 'selected':''}>${esc(pr.nombre)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="cancelarLote()">Cancelar todo el lote</button>
+        <button class="btn secondary" onclick="saltarArchivoLote()">Saltar este archivo</button>
+        <button class="btn" onclick="confirmarProveedorLote()">Continuar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function confirmarProveedorLote(){
+  const id = document.getElementById('lote_proveedor_sel').value;
+  if(!id){ showToast('Elegí un proveedor'); return; }
+  abrirImportLoteParaProveedor(id, window.__loteFileTemp);
+}
+
+function abrirImportLoteParaProveedor(proveedorId, file){
+  openImportModal(proveedorId);
+  cargarArchivoEnContexto(file);
+}
+
+function saltarArchivoLote(){
+  loteIndex++;
+  iniciarSiguienteDelLote();
+}
+
+function cancelarLote(){
+  loteActivo = false;
+  loteArchivos = [];
+  loteIndex = 0;
+  closeModal();
+  render();
+  showToast('Lote de importación cancelado');
+}
+
+/* Compara la configuración guardada de un proveedor contra el archivo recién subido */
+function detectarCambios(config, allRows){
+  const avisos = [];
+  const maxCols = allRows.reduce((m,r)=>Math.max(m, r.length), 1);
+  if(config.maxColsSeen && maxCols !== config.maxColsSeen){
+    avisos.push(`Antes el archivo tenía ${config.maxColsSeen} columna(s) y ahora tiene ${maxCols}.`);
+  }
+  const sample = allRows.slice(config.startRow-1, config.startRow-1+15).filter(r=>r.some(c=>String(c).trim()!==''));
+  if(sample.length){
+    let numOk=0, numTotal=0;
+    for(const r of sample){
+      const v = r[config.colPrecio];
+      if(v===undefined || v==='') continue;
+      numTotal++;
+      if(!isNaN(parsePrecioAR(v))) numOk++;
+    }
+    if(numTotal>0 && (numOk/numTotal) < 0.6){
+      avisos.push(`La columna ${excelCol(config.colPrecio)} (Precio) ya no parece tener precios.`);
+    }
+    let txtOk=0, txtTotal=0;
+    for(const r of sample){
+      const v = r[config.colDescripcion];
+      if(v===undefined || v==='') continue;
+      txtTotal++;
+      if(isNaN(parsePrecioAR(v)) && String(v).trim().length>=3) txtOk++;
+    }
+    if(txtTotal>0 && (txtOk/txtTotal) < 0.6){
+      avisos.push(`La columna ${excelCol(config.colDescripcion)} (Descripción) ya no parece tener nombres de productos.`);
+    }
+  }
+  return avisos;
+}
+
+function renderImportMapping(){
+  const div = document.getElementById('im_mapping');
+  const rows = importCtx.allRows;
+  const startRow = importCtx.startRow || 1;
+  const fileMaxCols = rows.reduce((m,r)=>Math.max(m, r.length), 1);
+  const maxCols = Math.min(fileMaxCols, IMPORT_LETTERS.length);
+  const pr = proveedores.find(x=>x.id===importCtx.proveedorId);
+  const config = pr ? pr.importConfig : null;
+
+  // Vista previa tipo Excel, con letras y número de columna (A a L como máximo) — 5 filas visibles
+  const windowSize = 5;
+  let windowStart = Math.max(0, (startRow - 1) - Math.floor(windowSize/2));
+  windowStart = Math.min(windowStart, Math.max(0, rows.length - windowSize));
+  windowStart = Math.max(0, windowStart);
+  const windowEnd = Math.min(rows.length, windowStart + windowSize);
+
+  let grid = `<div class="file-grid-wrap"><table class="file-grid"><thead><tr><th>Fila</th>`;
+  for(let c=0;c<maxCols;c++){ grid += `<th>${excelCol(c)}<br><span style="font-weight:400; opacity:.55;">col. ${c+1}</span></th>`; }
+  grid += `</tr></thead><tbody>`;
+  for(let r=windowStart; r<windowEnd; r++){
+    const rowNum = r+1;
+    const isStart = rowNum === startRow;
+    grid += `<tr style="${isStart?'background:#fbecd0;':''}"><td class="mono">${rowNum}${isStart?' ▶':''}</td>`;
+    for(let c=0;c<maxCols;c++){
+      let val = rows[r][c] ?? '';
+      val = String(val);
+      if(val.length>20) val = val.slice(0,20)+'…';
+      grid += `<td>${esc(val)}</td>`;
+    }
+    grid += `</tr>`;
+  }
+  grid += `</tbody></table></div>`;
+
+  const colOpts = (allowNone) => {
+    let h = allowNone ? '<option value="">— No tiene —</option>' : '';
+    for(let c=0;c<maxCols;c++){ h += `<option value="${c}">Columna ${excelCol(c)}</option>`; }
+    return h;
+  };
+
+  let avisosHtml = '';
+  if(config){
+    const avisos = detectarCambios(config, rows);
+    if(avisos.length){
+      avisosHtml = `<div style="background:var(--warn-bg); color:var(--warn); border-radius:8px; padding:10px 12px; margin-bottom:10px; font-size:12.5px;">
+        <b>⚠ Este archivo parece distinto al de la última vez:</b>
+        <ul style="margin:6px 0 0 18px; padding:0;">${avisos.map(a=>`<li>${esc(a)}</li>`).join('')}</ul>
+      </div>`;
+    }else{
+      avisosHtml = `<div style="color:var(--ink-soft); font-size:12px; margin-bottom:10px;">Se precargó la config. de la última importación (${config.savedAt}).</div>`;
+    }
+  }
+
+  const sheetNames = importCtx.workbook ? importCtx.workbook.SheetNames : [];
+  const sheetSelector = sheetNames.length > 1 ? `
+    <div class="field">
+      <label>Hoja del Excel</label>
+      <select onchange="changeImportSheet(this.value)">
+        ${sheetNames.map(n=>`<option value="${esc(n)}" ${n===importCtx.sheetName?'selected':''}>${esc(n)}</option>`).join('')}
+      </select>
+    </div>` : '';
+
+  div.innerHTML = `
+    <div class="import-layout">
+      <div class="import-col-left">
+        <div class="step-label">Así se ve tu archivo (como en Excel)</div>
+        ${grid}
+        <div id="im_preview"></div>
+      </div>
+      <div class="import-col-right">
+        ${sheetSelector}
+        <div class="field">
+          <label>¿En qué fila empiezan los productos?</label>
+          <input id="im_start_row" type="number" min="1" value="${startRow}" onchange="importCtx.startRow=Math.max(1,Math.round(Number(this.value)||1)); renderImportMapping();">
+        </div>
+        ${avisosHtml}
+        <div class="field"><label>Código</label><select id="im_col_codigo">${colOpts(true)}</select></div>
+        <div class="field"><label>Rubro</label><select id="im_col_rubro">${colOpts(true)}</select></div>
+        <div class="field"><label>Descripción *</label><select id="im_col_descripcion">${colOpts(false)}</select></div>
+        <div class="field"><label>Precio *</label><select id="im_col_precio">${colOpts(false)}</select></div>
+        <div class="field"><label>UM</label><select id="im_col_um">${colOpts(true)}</select></div>
+        <div class="checkbox-field">
+          <input type="checkbox" id="im_ya_descuento">
+          <label for="im_ya_descuento" style="margin:0;">El precio ya tiene mi descuento aplicado</label>
+        </div>
+        <button class="btn small" style="width:100%;" onclick="generarPreviewImport()">Generar vista previa</button>
+      </div>
+    </div>
+    <div class="modal-actions" style="margin-top:12px;">
+      <button class="btn secondary small" onclick="closeModal()">Cancelar</button>
+    </div>
+  `;
+
+  if(config){
+    // Precargar con la configuración guardada de este proveedor
+    setSelectVal('im_col_codigo', config.colCodigo);
+    setSelectVal('im_col_rubro', config.colRubro);
+    setSelectVal('im_col_descripcion', config.colDescripcion);
+    setSelectVal('im_col_precio', config.colPrecio);
+    setSelectVal('im_col_um', config.colUM);
+    document.getElementById('im_ya_descuento').checked = !!config.yaDescuento;
+  }else{
+    // Primera vez: adivinar columnas mirando el contenido
+    const sample = rows.slice(startRow-1, startRow-1+15);
+    let bestPrecio = 0, bestPrecioScore = -1, bestDesc = 0, bestDescScore = -1;
+    for(let c=0;c<maxCols;c++){
+      let numCount = 0, textLen = 0, textCount = 0;
+      for(const r of sample){
+        const v = r[c];
+        if(v === undefined || v === '') continue;
+        if(!isNaN(parsePrecioAR(v)) && String(v).replace(/[^0-9]/g,'').length>0) numCount++;
+        else { textLen += String(v).length; textCount++; }
+      }
+      if(numCount > bestPrecioScore){ bestPrecioScore = numCount; bestPrecio = c; }
+      const avgLen = textCount ? textLen/textCount : 0;
+      if(avgLen > bestDescScore){ bestDescScore = avgLen; bestDesc = c; }
+    }
+    document.getElementById('im_col_precio').value = bestPrecio;
+    document.getElementById('im_col_descripcion').value = bestDesc === bestPrecio && maxCols>1 ? (bestDesc===0?1:0) : bestDesc;
+  }
+}
+
+function setSelectVal(id, val){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.value = (val === null || val === undefined) ? '' : String(val);
+}
+
+function normTxt(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+
+function generarPreviewImport(){
+  const getCol = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v); };
+  const colCodigo = getCol('im_col_codigo');
+  const colRubro = getCol('im_col_rubro');
+  const colDescripcion = getCol('im_col_descripcion');
+  const colPrecio = getCol('im_col_precio');
+  const colUM = getCol('im_col_um');
+  const yaDescuento = document.getElementById('im_ya_descuento').checked;
+  const startRow = importCtx.startRow || 1;
+
+  if(colDescripcion === null || colPrecio === null){ showToast('Elegí al menos la columna de Descripción y de Precio'); return; }
+
+  const dataRows = importCtx.allRows.slice(startRow-1).filter(r => r.some(c=>String(c).trim()!==''));
+  if(dataRows.length === 0){ showToast('No hay filas de datos a partir de esa fila'); return; }
+
+  const pr = proveedores.find(x=>x.id===importCtx.proveedorId);
+  const rows = dataRows.map(r=>{
+    const nombre = String(r[colDescripcion] ?? '').trim();
+    const codigo = colCodigo !== null ? String(r[colCodigo] ?? '').trim() : '';
+    const rubro = colRubro !== null ? String(r[colRubro] ?? '').trim() : '';
+    const um = colUM !== null ? String(r[colUM] ?? '').trim() : '';
+    const precioParsed = parsePrecioAR(r[colPrecio]);
+    let match = null;
+    if(codigo){ match = productos.find(p => p.codigo && normTxt(p.codigo) === normTxt(codigo)); }
+    if(!match && nombre){ match = productos.find(p => normTxt(p.nombre) === normTxt(nombre)); }
+    const costoNeto = isNaN(precioParsed) ? 0 : (yaDescuento ? precioParsed : aplicarDescuentos(precioParsed, getDescuentos(pr)));
+    const venta = redondearPrecio(aplicarGlobales(aplicarGanancias(costoNeto, getGanancias(pr))));
+    return { nombre, codigo, rubro, um, precioParsed, costoNeto, venta, match, incluir: !isNaN(precioParsed) && nombre !== '' };
+  }).filter(r => r.nombre !== '');
+
+  if(rows.length === 0){ showToast('No se encontraron productos con esas columnas. Revisá la fila de inicio y las columnas elegidas.'); return; }
+
+  importCtx.rows = rows;
+  importCtx.mapping = { startRow, colCodigo, colRubro, colDescripcion, colPrecio, colUM, yaDescuento,
+    maxColsSeen: importCtx.allRows.reduce((m,r)=>Math.max(m, r.length), 1) };
+  renderImportPreview();
+}
+
+function renderImportPreview(){
+  const div = document.getElementById('im_preview');
+  const rows = importCtx.rows;
+  const nuevos = rows.filter(r=>!r.match).length;
+  const existentes = rows.filter(r=>r.match).length;
+  let html = `<div class="step-label">Vista previa — ${existentes} para actualizar, ${nuevos} nuevos</div>
+  <div class="preview-wrap" style="max-height:200px;"><table><thead><tr>
+    <th></th><th>Código</th><th>Rubro</th><th>Descripción</th><th>Precio</th><th>UM</th><th>Estado</th>
+  </tr></thead><tbody>`;
+  rows.forEach((r,idx)=>{
+    html += `<tr>
+      <td><input type="checkbox" ${r.incluir?'checked':''} onchange="importCtx.rows[${idx}].incluir=this.checked"></td>
+      <td class="mono">${r.codigo?esc(r.codigo):'—'}</td>
+      <td>${r.rubro?esc(r.rubro):'—'}</td>
+      <td>${esc(r.nombre)}</td>
+      <td class="price">${money(r.venta)}</td>
+      <td>${r.um?esc(r.um):'—'}</td>
+      <td>${r.match ? '<span class="badge good">actualiza</span>' : '<span class="badge new">nuevo</span>'}</td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>
+  <div class="modal-actions">
+    <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+    <button class="btn" onclick="confirmarImport()">Confirmar importación</button>
+  </div>`;
+  div.innerHTML = html;
+}
+
+async function confirmarImport(){
+  const prParaBackup = proveedores.find(x=>x.id===importCtx.proveedorId);
+  // Guardar un respaldo del estado actual de ESTE proveedor antes de aplicar los cambios de esta importación
+  if(prParaBackup){
+    try{
+      let backups = (await fbGet('backupsPorProveedor')) || {};
+      backups[prParaBackup.id] = {
+        productos: productos.filter(p=>p.proveedorId===prParaBackup.id).map(p=>({...p})),
+        proveedor: {...prParaBackup}
+      };
+      await fbSet('backupsPorProveedor', backups);
+    }catch(e){ /* si falla el respaldo, igual seguimos con la importación */ }
+  }
+
+  const pr = proveedores.find(x=>x.id===importCtx.proveedorId);
+  let actualizados = 0, creados = 0;
+  for(const r of importCtx.rows){
+    if(!r.incluir) continue;
+    if(r.match){
+      r.match.precioLista = isNaN(r.precioParsed) ? r.match.precioLista : r.precioParsed;
+      r.match.costo = r.costoNeto;
+      const ventaVieja = r.match.venta;
+      r.match.venta = r.venta;
+      r.match.ventaAnterior = ventaVieja;
+      r.match.proveedor = pr.nombre;
+      r.match.proveedorId = pr.id;
+      if(r.codigo) r.match.codigo = r.codigo;
+      if(r.rubro) r.match.categoria = r.rubro;
+      if(r.um) r.match.presentacion = r.um;
+      actualizados++;
+    }else{
+      productos.push({
+        id: uid(),
+        nombre: r.nombre,
+        categoria: r.rubro,
+        codigo: r.codigo,
+        presentacion: r.um,
+        stock: 0,
+        stockMin: configStockBajoDefault,
+        precioLista: isNaN(r.precioParsed) ? 0 : r.precioParsed,
+        costo: r.costoNeto,
+        venta: r.venta,
+        proveedor: pr.nombre,
+        proveedorId: pr.id,
+      });
+      creados++;
+    }
+  }
+  // Guardar la configuración de columnas para la próxima importación de este proveedor
+  pr.importConfig = { ...importCtx.mapping, savedAt: today() };
+  pr.ultimaImportacion = today();
+  saveProductos();
+  saveProveedores();
+  closeModal();
+
+  if(loteActivo){
+    showToast(`${pr.nombre}: ${actualizados} actualizados, ${creados} nuevos`);
+    loteIndex++;
+    setTimeout(()=> iniciarSiguienteDelLote(), 400);
+    return;
+  }
+
+  currentTab = 'stock';
+  render();
+  showToast(`Importación lista: ${actualizados} actualizados, ${creados} nuevos`);
+}
+
+
+function exportarCSV(){
+  const rows = [['Nombre','Categoria','Codigo','Stock','Precio costo','Precio venta','Proveedor']];
+  for(const p of productos){
+    rows.push([p.nombre, p.categoria||'', p.codigo||'', p.stock||0, p.costo||0, p.venta||0, p.proveedor||'']);
+  }
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'stock_ferreteria.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('CSV descargado');
+}
+
+/* ---------------- Navegación ---------------- */
+document.querySelectorAll('nav.tabs button').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    currentTab = btn.dataset.tab;
+    render();
+  });
+});
+
+loadAll();
+</script>
+</body>
+</html>
