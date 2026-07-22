@@ -341,7 +341,6 @@
       <button data-tab="metricas">Métricas</button>
       <button data-tab="cuentas">Cuentas corrientes</button>
     </nav>
-    <span id="userEmailTag" class="mono" style="color:#c9cbce; font-size:11.5px; margin-right:2px;"></span>
     <button class="icon-btn" id="logoutBtn" title="Cerrar sesión" onclick="cerrarSesion()" style="margin-bottom:8px; background:transparent; border-color:#565a60; color:#fff;">⎋</button>
     <button class="icon-btn" id="refreshBtn" title="Traer los últimos datos guardados" onclick="manualRefresh()" style="margin-bottom:8px; background:transparent; border-color:#565a60; color:#fff;">⟳</button>
     <button class="icon-btn" id="settingsBtn" title="Configuración" onclick="openConfiguracionModal()" style="margin-bottom:8px; background:transparent; border-color:#565a60; color:#fff;">⚙</button>
@@ -383,6 +382,7 @@ let configStockBajoDefault = 0;
 let configRedondeoStep = 1;
 let configWhatsappModo = 'web'; // 'web' = WhatsApp Web, 'escritorio' = app de escritorio
 let configCuentaGmail = ''; // mail de Google a usar siempre para buscar en Gmail
+let currentUserEmail = '';
 
 /* ---------------- Almacenamiento persistente (Firebase Realtime Database) ---------------- */
 const FIREBASE_URL = 'https://datos-ferreteria-default-rtdb.firebaseio.com';
@@ -407,12 +407,7 @@ const EMAILS_AUTORIZADOS = [
 function iniciarSesionGoogle(){
   const errBox = document.getElementById('loginError');
   if(errBox) errBox.textContent = '';
-  firebase.auth().signInWithPopup(crearGoogleProviderConGmail()).then(result => {
-    const cred = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
-    if(cred && cred.accessToken) gmailAccessToken = cred.accessToken;
-  }).catch(err => {
-    if(errBox) errBox.textContent = 'No se pudo iniciar sesión: ' + err.message;
-  });
+  firebase.auth().signInWithRedirect(crearGoogleProviderConGmail());
 }
 
 function cerrarSesion(){
@@ -439,13 +434,38 @@ firebase.auth().onAuthStateChanged(async (user) => {
     }
     gate.style.display = 'none';
     appRoot.style.display = '';
-    const tag = document.getElementById('userEmailTag');
-    if(tag) tag.textContent = user.email;
+    currentUserEmail = user.email;
     await loadAll();
   } else {
     gate.style.display = 'flex';
     appRoot.style.display = 'none';
   }
+});
+
+function esperarDatosListos(cb, intentos){
+  intentos = intentos || 0;
+  if(window.__datosListos || intentos >= 20){
+    cb();
+  } else {
+    setTimeout(()=> esperarDatosListos(cb, intentos+1), 300);
+  }
+}
+
+firebase.auth().getRedirectResult().then(result => {
+  if(!result || !result.user) return;
+  const cred = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
+  if(cred && cred.accessToken) gmailAccessToken = cred.accessToken;
+  if(sessionStorage.getItem('gmailReconectando')){
+    sessionStorage.removeItem('gmailReconectando');
+    const prId = sessionStorage.getItem('gmailReconectarProveedor');
+    sessionStorage.removeItem('gmailReconectarProveedor');
+    if(prId && gmailAccessToken){
+      esperarDatosListos(()=>{ showToast('Gmail conectado, buscando...'); buscarListaGmail(prId); });
+    }
+  }
+}).catch(err => {
+  const errBox = document.getElementById('loginError');
+  if(errBox) errBox.textContent = 'No se pudo iniciar sesión: ' + err.message;
 });
 
 async function fbGet(key){
@@ -476,6 +496,7 @@ async function loadAll(){
   try{ const v = await fbGet('globalPct'); if(v){ globalPctTarjeta = Number(v.tarjeta)||0; globalPctIva = Number(v.iva)||0; } }catch(e){ /* usa 0 por defecto */ }
   try{ const v = await fbGet('configuracion'); if(v){ configStockBajoDefault = Number(v.stockBajoDefault)||0; configRedondeoStep = Number(v.redondeoStep)||1; configWhatsappModo = v.whatsappModo === 'escritorio' ? 'escritorio' : 'web'; configCuentaGmail = v.cuentaGmail || ''; } }catch(e){ /* usa los valores por defecto */ }
   render();
+  window.__datosListos = true;
 }
 async function manualRefresh(){
   const btn = document.getElementById('refreshBtn');
@@ -524,21 +545,13 @@ function crearGoogleProviderConGmail(soloParaReconexion){
   return provider;
 }
 
-async function reconectarGmail(){
-  try{
-    const user = firebase.auth().currentUser;
-    if(!user) return false;
-    const result = await user.reauthenticateWithPopup(crearGoogleProviderConGmail(true));
-    const cred = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
-    if(cred && cred.accessToken){
-      gmailAccessToken = cred.accessToken;
-      showToast('Gmail conectado');
-      return true;
-    }
-  }catch(e){
-    showToast('No se pudo conectar con Gmail: ' + e.message);
-  }
-  return false;
+function reconectarGmail(proveedorId){
+  const user = firebase.auth().currentUser;
+  if(!user) return;
+  if(proveedorId) sessionStorage.setItem('gmailReconectarProveedor', proveedorId);
+  sessionStorage.setItem('gmailReconectando', '1');
+  showToast('Te llevamos a confirmar el permiso de Gmail...');
+  user.reauthenticateWithRedirect(crearGoogleProviderConGmail(true));
 }
 
 async function gmailFetch(url){
@@ -567,8 +580,8 @@ async function buscarListaGmail(proveedorId){
   if(!pr) return;
   if(!pr.mail){ showToast('Este proveedor no tiene un mail cargado. Agregalo con el botón ✎ Editar.'); return; }
   if(!gmailAccessToken){
-    const conectado = await reconectarGmail();
-    if(!conectado) return;
+    reconectarGmail(proveedorId);
+    return;
   }
   showToast('Buscando en Gmail...');
   try{
@@ -591,8 +604,7 @@ async function buscarListaGmail(proveedorId){
     mostrarModalResultadosGmail(pr, detalles);
   }catch(e){
     if(e.code === 'TOKEN_VENCIDO' || e.code === 'SIN_TOKEN'){
-      const conectado = await reconectarGmail();
-      if(conectado) buscarListaGmail(proveedorId);
+      reconectarGmail(proveedorId);
     }else{
       showToast('Error buscando en Gmail: ' + e.message);
     }
@@ -756,6 +768,10 @@ function openConfiguracionModal(){
   <div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
       <h3>Configuración</h3>
+      <div class="field">
+        <label>Sesión iniciada como</label>
+        <div class="mono" style="padding:8px 0; color:var(--ink-soft); font-size:13.5px;">${esc(currentUserEmail || '—')}</div>
+      </div>
       <div class="field">
         <label>Umbral por defecto de "stock bajo"</label>
         <input id="cfg_stockbajo" type="number" min="0" value="${configStockBajoDefault}">
