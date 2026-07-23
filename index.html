@@ -2825,15 +2825,16 @@ function renderImportMapping(){
   };
 
   let avisosHtml = '';
+  let avisos = [];
   if(config){
-    const avisos = detectarCambios(config, rows);
+    avisos = detectarCambios(config, rows);
     if(avisos.length){
       avisosHtml = `<div style="background:var(--warn-bg); color:var(--warn); border-radius:8px; padding:10px 12px; margin-bottom:10px; font-size:12.5px;">
         <b>⚠ Este archivo parece distinto al de la última vez:</b>
         <ul style="margin:6px 0 0 18px; padding:0;">${avisos.map(a=>`<li>${esc(a)}</li>`).join('')}</ul>
       </div>`;
     }else{
-      avisosHtml = `<div style="color:var(--ink-soft); font-size:12px; margin-bottom:10px;">Se precargó la config. de la última importación (${config.savedAt}).</div>`;
+      avisosHtml = `<div style="color:var(--ink-soft); font-size:12px; margin-bottom:10px;">Se precargó la config. de la última importación (${config.savedAt}) — como no se detectaron cambios, ya se generó la vista previa. Revisala antes de confirmar.</div>`;
     }
   }
 
@@ -2885,6 +2886,10 @@ function renderImportMapping(){
     setSelectVal('im_col_precio', config.colPrecio);
     setSelectVal('im_col_um', config.colUM);
     document.getElementById('im_ya_descuento').checked = !!config.yaDescuento;
+    if(avisos.length === 0){
+      // Mismo formato que la última vez: generamos la vista previa sola, sin esperar el click
+      generarPreviewImport();
+    }
   }else{
     // Primera vez: adivinar columnas mirando el contenido
     const sample = rows.slice(startRow-1, startRow-1+15);
