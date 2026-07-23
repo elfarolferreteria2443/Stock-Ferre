@@ -409,6 +409,7 @@ const EMAILS_AUTORIZADOS = [
 function iniciarSesionGoogle(){
   const errBox = document.getElementById('loginError');
   if(errBox) errBox.textContent = '';
+  sessionStorage.setItem('loginRedirectPendiente', '1');
   firebase.auth().signInWithRedirect(crearGoogleProviderConGmail());
 }
 
@@ -454,7 +455,16 @@ function esperarDatosListos(cb, intentos){
 }
 
 firebase.auth().getRedirectResult().then(result => {
-  if(!result || !result.user) return;
+  const habiaRedirectPendiente = !!sessionStorage.getItem('loginRedirectPendiente');
+  sessionStorage.removeItem('loginRedirectPendiente');
+  if(!result || !result.user){
+    console.log('getRedirectResult sin resultado. ¿Había un login en curso?', habiaRedirectPendiente);
+    if(habiaRedirectPendiente){
+      const errBox = document.getElementById('loginError');
+      if(errBox) errBox.textContent = 'Volviste de Google pero el navegador no pudo completar el login (no hubo error, pero tampoco sesión). Esto suele pasar si el navegador bloquea cookies/almacenamiento de terceros. Probá: 1) otro navegador, 2) desactivar bloqueadores de anuncios/privacidad para este sitio, o 3) permitir cookies de terceros para *.firebaseapp.com y *.google.com.';
+    }
+    return;
+  }
   const cred = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
   if(cred && cred.accessToken) gmailAccessToken = cred.accessToken;
   if(sessionStorage.getItem('gmailReconectando')){
