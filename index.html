@@ -1893,7 +1893,7 @@ function renderProveedores(){
     <div class="spacer"></div>
     <label class="btn btn-yellow" style="cursor:pointer; margin:0; display:inline-block;">
       Importar varias listas
-      <input type="file" accept=".xlsx,.xls,.csv,.xlsm" multiple style="display:none;" onchange="abrirImportacionLote(this)">
+      <input type="file" accept=".xlsx,.xls,.csv,.xlsm,.pdf" multiple style="display:none;" onchange="abrirImportacionLote(this)">
     </label>
     <button class="btn secondary" onclick="openProductoModal()">+ Agregar producto</button>
     <button class="btn" onclick="openProveedorModal()">+ Agregar proveedor</button>
@@ -2520,14 +2520,14 @@ function openImportModal(proveedorId){
   const archivoSeccion = loteActivo
     ? `<div class="global-pct-note" style="margin-bottom:10px;">Archivo ${loteIndex+1} de ${loteArchivos.length}: <b>${esc(loteArchivos[loteIndex] ? loteArchivos[loteIndex].name : '')}</b> (cargado automáticamente)</div>`
     : `<div class="field">
-        <label>Archivo (.xlsx, .xls o .csv)</label>
-        <input id="im_file" type="file" accept=".xlsx,.xls,.csv" onchange="handleImportFile(this)">
+        <label>Archivo (.xlsx, .xls, .csv o .pdf)</label>
+        <input id="im_file" type="file" accept=".xlsx,.xls,.csv,.pdf" onchange="handleImportFile(this)">
       </div>`;
   modal.innerHTML = `
   <div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal wide">
       <h3>Importar lista — ${esc(pr.nombre)}</h3>
-      <div class="subtitle">Subí el archivo Excel o CSV que te mandó el proveedor por mail. Descuento: <b>${formatPctList(getDescuentos(pr))}</b> · Ganancia: <b>${formatPctList(getGanancias(pr))}</b></div>
+      <div class="subtitle">Subí el archivo Excel, CSV o PDF que te mandó el proveedor por mail (el PDF se lee con IA, necesita la clave de API configurada en ⚙). Descuento: <b>${formatPctList(getDescuentos(pr))}</b> · Ganancia: <b>${formatPctList(getGanancias(pr))}</b></div>
       ${archivoSeccion}
       <div id="im_mapping"></div>
       <div class="modal-actions">
@@ -2553,6 +2553,11 @@ function extractRows(wb, sheetName){
 
 async function cargarArchivoEnContexto(file){
   if(!file) return;
+  const esPdf = (file.type === 'application/pdf') || /\.pdf$/i.test(file.name || '');
+  if(esPdf){
+    await procesarPdfConIA(file);
+    return;
+  }
   try{
     const buf = await file.arrayBuffer();
     const data = new Uint8Array(buf);
@@ -2577,6 +2582,90 @@ async function cargarArchivoEnContexto(file){
 function handleImportFile(input){
   const file = input.files[0];
   cargarArchivoEnContexto(file);
+}
+
+/* Lee una lista de precios en PDF usando Claude (Anthropic), ya que un PDF no tiene
+   columnas fijas como un Excel. Devuelve directamente las filas a la vista previa de
+   importación, sin pasar por el paso de mapeo de columnas. */
+async function procesarPdfConIA(file){
+  if(!configAnthropicApiKey){
+    showToast('Configurá tu clave de API de Anthropic en Configuración (⚙) para leer listas en PDF.');
+    return;
+  }
+  const div = document.getElementById('im_mapping');
+  if(div) div.innerHTML = `<div class="step-label">Leyendo el PDF con IA, puede tardar unos segundos...</div>`;
+  try{
+    const base64 = await new Promise((resolve, reject)=>{
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1]);
+      reader.onerror = () => reject(new Error('No se pudo leer el archivo'));
+      reader.readAsDataURL(file);
+    });
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': configAnthropicApiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5',
+        max_tokens: 8000,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+            { type: 'text', text: 'Sos un asistente que lee listas de precios de proveedores de ferretería en PDF. Mirá el documento completo (todas las páginas) y devolvé SOLO un JSON válido, sin texto adicional, sin comillas invertidas y sin la palabra json antes: un array de objetos, uno por cada producto, con esta forma exacta: [{"codigo":"ABC123","rubro":"Tornillos","descripcion":"Tornillo autoperforante 6x1","precio":123.45,"um":"UN"}]. "codigo" es el código o SKU si existe (si no hay, dejalo vacío). "rubro" es la categoría o rubro si existe (si no, vacío). "descripcion" es el nombre del producto. "precio" es el precio de lista en pesos, como número (sin el símbolo $, con punto decimal, sin separador de miles). "um" es la unidad de medida si existe (si no, vacío). Incluí todas las filas de productos que encuentres, de todas las páginas.' }
+          ]
+        }]
+      })
+    });
+    if(!response.ok){
+      const errBody = await response.text().catch(()=> '');
+      throw new Error(`Anthropic API respondió ${response.status}: ${errBody.slice(0,200)}`);
+    }
+    const data = await response.json();
+    const textBlock = (data.content || []).map(b => b.text || '').join('\n');
+    const clean = textBlock.replace(/```json|```/g, '').trim();
+    const items = JSON.parse(clean);
+    if(!Array.isArray(items) || items.length === 0){
+      showToast('No se encontraron productos en el PDF.');
+      if(div) div.innerHTML = '';
+      return;
+    }
+    aplicarFilasDesdeIA(items);
+  }catch(err){
+    showToast('No se pudo leer el PDF automáticamente: ' + (err.message||'error desconocido'));
+    if(div) div.innerHTML = `<div class="global-pct-note" style="color:var(--danger);">No se pudo leer el PDF. Probá con otro archivo o cargalo como Excel/CSV.</div>`;
+  }
+}
+
+function aplicarFilasDesdeIA(items){
+  const pr = proveedores.find(x=>x.id===importCtx.proveedorId);
+  const rows = items.map(it=>{
+    const nombre = String(it.descripcion||'').trim();
+    const codigo = String(it.codigo||'').trim();
+    const rubro = String(it.rubro||'').trim();
+    const um = String(it.um||'').trim();
+    const precioParsed = Number(it.precio);
+    let match = null;
+    if(codigo){ match = productos.find(p => p.codigo && normTxt(p.codigo) === normTxt(codigo)); }
+    if(!match && nombre){ match = productos.find(p => normTxt(p.nombre) === normTxt(nombre)); }
+    const costoNeto = isNaN(precioParsed) ? 0 : aplicarDescuentos(precioParsed, getDescuentos(pr));
+    const venta = redondearPrecio(aplicarGlobales(aplicarGanancias(costoNeto, getGanancias(pr))));
+    return { nombre, codigo, rubro, um, precioParsed, costoNeto, venta, match, incluir: !isNaN(precioParsed) && nombre !== '' };
+  }).filter(r => r.nombre !== '');
+
+  if(rows.length === 0){ showToast('No se pudieron interpretar productos válidos del PDF.'); return; }
+
+  importCtx.rows = rows;
+  importCtx.mapping = null; // no aplica mapeo de columnas para PDFs leídos con IA
+  const div = document.getElementById('im_mapping');
+  if(div){
+    div.innerHTML = `<div id="im_preview"></div>`;
+    renderImportPreview();
+  }
 }
 
 function abrirImportacionLote(input){
