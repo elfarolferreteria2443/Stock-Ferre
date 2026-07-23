@@ -361,6 +361,7 @@ let proveedores = [];
 let cuentasMovimientos = [];
 let currentTab = 'stock';
 let searchStock = '';
+let searchPedidos = '';
 let stockSortColumn = null;
 let stockSortDir = 'asc';
 let filterCat = '';
@@ -383,6 +384,7 @@ let configRedondeoStep = 1;
 let configWhatsappModo = 'web'; // 'web' = WhatsApp Web, 'escritorio' = app de escritorio
 let configCuentaGmail = ''; // mail de Google a usar siempre para buscar en Gmail
 let currentUserEmail = '';
+let configAnthropicApiKey = localStorage.getItem('ferreteria_anthropic_key') || '';
 
 /* ---------------- Almacenamiento persistente (Firebase Realtime Database) ---------------- */
 const FIREBASE_URL = 'https://datos-ferreteria-default-rtdb.firebaseio.com';
@@ -546,12 +548,10 @@ function crearGoogleProviderConGmail(soloParaReconexion){
 }
 
 function reconectarGmail(proveedorId){
-  const user = firebase.auth().currentUser;
-  if(!user) return;
   if(proveedorId) sessionStorage.setItem('gmailReconectarProveedor', proveedorId);
   sessionStorage.setItem('gmailReconectando', '1');
   showToast('Te llevamos a confirmar el permiso de Gmail...');
-  user.reauthenticateWithRedirect(crearGoogleProviderConGmail(true));
+  firebase.auth().signInWithRedirect(crearGoogleProviderConGmail(true));
 }
 
 async function gmailFetch(url){
@@ -795,6 +795,11 @@ function openConfiguracionModal(){
         <input id="cfg_cuenta_gmail" type="text" value="${esc(configCuentaGmail)}" placeholder="Ej: elfarol.ferreteria2443@gmail.com">
         <div class="global-pct-note" style="margin-top:4px;">Fijá acá la cuenta de Google donde te llegan las listas de los proveedores, así "Buscar en Gmail" no te pide elegir cuenta cada vez.</div>
       </div>
+      <div class="field">
+        <label>Clave de API de Anthropic (para leer fotos de facturas)</label>
+        <input id="cfg_anthropic_key" type="password" value="${esc(configAnthropicApiKey)}" placeholder="sk-ant-...">
+        <div class="global-pct-note" style="margin-top:4px;">Se usa solo en "Recibir pedido" para completar cantidades leyendo la foto de una factura. Se guarda únicamente en este dispositivo/navegador, no en la nube. Conseguila en console.anthropic.com → API Keys.</div>
+      </div>
       <div class="modal-actions">
         <button class="btn secondary" onclick="closeModal()">Cancelar</button>
         <button class="btn" onclick="guardarConfiguracion()">Guardar</button>
@@ -808,6 +813,8 @@ function guardarConfiguracion(){
   configRedondeoStep = Math.max(1, Math.round(Number(document.getElementById('cfg_redondeo').value)||1));
   configWhatsappModo = document.getElementById('cfg_whatsapp_modo').value === 'escritorio' ? 'escritorio' : 'web';
   configCuentaGmail = document.getElementById('cfg_cuenta_gmail').value.trim();
+  configAnthropicApiKey = document.getElementById('cfg_anthropic_key').value.trim();
+  localStorage.setItem('ferreteria_anthropic_key', configAnthropicApiKey);
   saveConfiguracion();
   const n = recalcularTodosLosPrecios();
   saveProductos();
@@ -873,7 +880,11 @@ function render(){
   const prevScrollTop = prevScrollEl ? prevScrollEl.scrollTop : null;
   const main = document.getElementById('main');
   if(currentTab === 'stock') main.innerHTML = renderStock();
-  else if(currentTab === 'pedidos') main.innerHTML = renderPedidos();
+  else if(currentTab === 'pedidos'){
+    main.innerHTML = renderPedidos();
+    const wrap = document.getElementById('pedidosListWrap');
+    if(wrap) wrap.innerHTML = renderPedidosListHtml();
+  }
   else if(currentTab === 'proveedores') main.innerHTML = renderProveedores();
   else if(currentTab === 'metricas') main.innerHTML = renderMetricas();
   else main.innerHTML = renderCuentas();
@@ -1237,17 +1248,21 @@ function confirmarFaltante(productId){
   if(!proveedorNombre){ showToast('Indicá a qué proveedor pedirlo'); return; }
   const cantidad = Math.max(1, Math.round(Number(document.getElementById('fal_cantidad').value)||1));
 
+  const provMatch = proveedores.find(pr => pr.nombre.toLowerCase() === proveedorNombre.toLowerCase());
   if(!p.proveedor){
     p.proveedor = proveedorNombre;
-    const provMatch = proveedores.find(pr => pr.nombre.toLowerCase() === proveedorNombre.toLowerCase());
     if(provMatch) p.proveedorId = provMatch.id;
     saveProductos();
   }
 
-  let ped = pedidos.find(x => x.estado === 'pendiente' && normTxt(x.proveedor) === normTxt(proveedorNombre));
+  let ped = pedidos.find(x => x.estado === 'pendiente' && (
+    (provMatch && x.proveedorId === provMatch.id) || normTxt(x.proveedor) === normTxt(proveedorNombre)
+  ));
   if(!ped){
-    ped = { id: uid(), proveedor: proveedorNombre, fecha: today(), items: [], notas: '', estado: 'pendiente', enviado: false };
+    ped = { id: uid(), proveedor: proveedorNombre, proveedorId: provMatch ? provMatch.id : null, fecha: today(), items: [], notas: '', estado: 'pendiente', enviado: false };
     pedidos.push(ped);
+  }else if(provMatch && !ped.proveedorId){
+    ped.proveedorId = provMatch.id;
   }
   const existing = ped.items.find(i=>i.productId===p.id);
   if(existing){
@@ -1309,7 +1324,7 @@ function saveProducto(id){
   const nombre = document.getElementById('f_nombre').value.trim();
   const venta = document.getElementById('f_venta').value;
   if(!nombre){ showToast('Poné un nombre para el producto'); return; }
-  if(venta === '' || isNaN(Number(venta))){ showToast('Poné un precio de venta válido'); return; }
+  if(venta === '' || isNaN(Number(venta)) || Number(venta) < 0){ showToast('Poné un precio de venta válido (0 o mayor)'); return; }
 
   const provNombre = document.getElementById('f_proveedor').value.trim();
   const provMatch = proveedores.find(pr => pr.nombre.toLowerCase() === provNombre.toLowerCase());
@@ -1320,13 +1335,14 @@ function saveProducto(id){
     codigo: document.getElementById('f_codigo').value.trim(),
     stock: Math.max(0, Math.round(Number(document.getElementById('f_stock').value)||0)),
     stockMin: Math.max(0, Math.round(Number(document.getElementById('f_stockmin').value)||0)),
-    precioLista: Number(document.getElementById('f_precioLista').value)||0,
-    costo: Number(document.getElementById('f_costo').value)||0,
-    venta: Number(venta),
+    precioLista: Math.max(0, Number(document.getElementById('f_precioLista').value)||0),
+    costo: Math.max(0, Number(document.getElementById('f_costo').value)||0),
+    venta: Math.max(0, Number(venta)),
     proveedor: provNombre,
     proveedorId: provMatch ? provMatch.id : null,
     presentacion: document.getElementById('f_presentacion').value.trim(),
   };
+  const ventaBajoCosto = data.venta < data.costo && data.costo > 0;
 
   if(id){
     const p = productos.find(x=>x.id===id);
@@ -1340,23 +1356,42 @@ function saveProducto(id){
   saveProductos();
   closeModal();
   render();
-  showToast('Producto guardado');
+  showToast(ventaBajoCosto ? 'Guardado. Atención: el precio de venta quedó por debajo del costo.' : 'Producto guardado');
 }
 
 /* ================= PEDIDOS ================= */
 function renderPedidos(){
   let html = `<div class="toolbar">
-    <div class="spacer"></div>
+    <div class="search-wrap">
+      <input id="pedidos_search_input" type="text" placeholder="Buscar por proveedor o producto..." value="${esc(searchPedidos)}" oninput="searchPedidos=this.value; renderPedidosList();">
+      ${searchPedidos ? `<button class="icon-btn" title="Limpiar búsqueda" onclick="searchPedidos=''; render();">✕</button>` : ''}
+    </div>
     <button class="btn" onclick="openNuevoPedidoModal()">+ Nuevo pedido</button>
-  </div>`;
+  </div>
+  <div id="pedidosListWrap"></div>`;
 
   if(pedidos.length === 0){
     html += `<div class="empty"><div class="big">No hay pedidos todavía</div>
       <div>Creá un pedido a tu proveedor para reponer stock.</div></div>`;
     return html;
   }
+  return html;
+}
 
-  const ordenados = [...pedidos].sort((a,b)=> b.fecha.localeCompare(a.fecha));
+function renderPedidosListHtml(){
+  const q = searchPedidos.trim().toLowerCase();
+  let ordenados = [...pedidos].sort((a,b)=> b.fecha.localeCompare(a.fecha));
+  if(q){
+    ordenados = ordenados.filter(ped=>{
+      const enProveedor = (ped.proveedor||'').toLowerCase().includes(q);
+      const enProductos = ped.items.some(it=> (it.nombre||'').toLowerCase().includes(q));
+      return enProveedor || enProductos;
+    });
+  }
+  if(ordenados.length === 0){
+    return `<div class="empty"><div class="big">No hay resultados</div><div>Probá con otra búsqueda.</div></div>`;
+  }
+  let html = '';
   for(const ped of ordenados){
     const abierto = openPedidoIds.has(ped.id);
     const totalItems = ped.items.reduce((a,i)=>a+Number(i.cantidad),0);
@@ -1369,7 +1404,9 @@ function renderPedidos(){
       totalPedido += subtotalItem;
     }
     const texto = buildPedidoText(ped);
-    const provObj = proveedores.find(pr => normTxt(pr.nombre) === normTxt(ped.proveedor));
+    const provObj = ped.proveedorId
+      ? proveedores.find(pr => pr.id === ped.proveedorId)
+      : proveedores.find(pr => normTxt(pr.nombre) === normTxt(ped.proveedor));
     const telLimpio = provObj && provObj.whatsapp ? String(provObj.whatsapp).replace(/[^0-9]/g,'') : '';
     const linkWhatsapp = buildWhatsappLink(telLimpio, texto);
     const linkMail = 'mailto:?subject=' + encodeURIComponent(`Pedido a ${ped.proveedor || ''}`) + '&body=' + encodeURIComponent(texto);
@@ -1390,6 +1427,17 @@ function renderPedidos(){
     </div>`;
   }
   return html;
+}
+
+function renderPedidosList(){
+  const wrap = document.getElementById('pedidosListWrap');
+  if(wrap){
+    wrap.innerHTML = renderPedidosListHtml();
+    const input = document.getElementById('pedidos_search_input');
+    if(input){ input.focus(); const len = input.value.length; input.setSelectionRange(len, len); }
+  }else{
+    render();
+  }
 }
 
 function togglePedido(id){
@@ -1629,6 +1677,11 @@ function openRecibirModal(pedidoId){
 async function handleFacturaFoto(input){
   const file = input.files[0];
   if(!file) return;
+  if(!configAnthropicApiKey){
+    showToast('Configurá tu clave de API de Anthropic en Configuración (⚙) para usar esta función.');
+    input.value = '';
+    return;
+  }
   const ped = pedidos.find(x=>x.id===recepcionPedidoId);
   const statusEl = document.getElementById('rec_foto_status');
   if(statusEl) statusEl.innerHTML = `<div class="meta">Leyendo la factura…</div>`;
@@ -1643,9 +1696,14 @@ async function handleFacturaFoto(input){
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': configAnthropicApiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-sonnet-5',
         max_tokens: 1200,
         messages: [{
           role: 'user',
@@ -1656,6 +1714,10 @@ async function handleFacturaFoto(input){
         }]
       })
     });
+    if(!response.ok){
+      const errBody = await response.text().catch(()=> '');
+      throw new Error(`Anthropic API respondió ${response.status}: ${errBody.slice(0,200)}`);
+    }
     const data = await response.json();
     const textBlock = (data.content || []).map(b => b.text || '').join('\n');
     const clean = textBlock.replace(/```json|```/g, '').trim();
@@ -1683,7 +1745,7 @@ async function handleFacturaFoto(input){
         : `<div class="meta" style="color:var(--warn);">No se pudo emparejar ningún código con la foto. Cargá las cantidades a mano.</div>`;
     }
   }catch(err){
-    if(statusEl) statusEl.innerHTML = `<div class="meta" style="color:var(--danger);">No se pudo leer la factura automáticamente. Cargá las cantidades a mano.</div>`;
+    if(statusEl) statusEl.innerHTML = `<div class="meta" style="color:var(--danger);">No se pudo leer la factura automáticamente (${esc(err.message||'error desconocido')}). Cargá las cantidades a mano.</div>`;
   }
 }
 
@@ -1799,9 +1861,12 @@ function removeNpItem(idx){
 }
 function guardarPedido(){
   if(nuevoPedidoItems.length === 0){ showToast('Agregá al menos un producto al pedido'); return; }
+  const proveedorNombre = document.getElementById('np_proveedor').value.trim();
+  const provMatch = proveedores.find(pr => pr.nombre.toLowerCase() === proveedorNombre.toLowerCase());
   pedidos.push({
     id: uid(),
-    proveedor: document.getElementById('np_proveedor').value.trim(),
+    proveedor: proveedorNombre,
+    proveedorId: provMatch ? provMatch.id : null,
     fecha: today(),
     items: nuevoPedidoItems,
     notas: document.getElementById('np_notas').value.trim(),
@@ -1944,7 +2009,7 @@ function removeProveedorPct(provId, field){
 /* ================= MÉTRICAS ================= */
 function calcularMetricasProveedor(pr){
   const nombreNorm = normTxt(pr.nombre);
-  const pedidosProv = pedidos.filter(p => normTxt(p.proveedor) === nombreNorm);
+  const pedidosProv = pedidos.filter(p => p.proveedorId ? p.proveedorId === pr.id : normTxt(p.proveedor) === nombreNorm);
   const recibidos = pedidosProv.filter(p => p.estado === 'recibido');
   const pendientes = pedidosProv.filter(p => p.estado === 'pendiente');
 
@@ -2227,7 +2292,12 @@ function renderCuentas(){
                 <button type="button" class="icon-btn" style="width:20px; height:20px; font-size:11px;" title="Un día después" onclick="ajustarFechaFactura('${m.id}', 1)">›</button>
               </div>` : '—'}
             </td>
-            <td><button class="icon-btn" title="Eliminar movimiento" onclick="eliminarMovimiento('${m.id}')">🗑</button></td>
+            <td>
+              <div class="row-actions">
+                <button class="icon-btn" title="Editar monto/fecha" onclick="openEditarMovimientoModal('${m.id}')">✎</button>
+                <button class="icon-btn" title="Eliminar movimiento" onclick="eliminarMovimiento('${m.id}')">🗑</button>
+              </div>
+            </td>
             <td class="price" style="color:${m.saldoCorrido>0?'var(--danger)':(m.saldoCorrido<0?'var(--good)':'var(--ink-soft)')};">${money(m.saldoCorrido)}</td>
             <td><input type="text" value="${esc(m.notaExtra||'')}" placeholder="Escribir..." style="width:130px; padding:5px; border:1px solid var(--line); border-radius:6px;" onchange="updateMovimientoNota('${m.id}', this.value)"></td>
           </tr>`).join('')}
@@ -2270,6 +2340,38 @@ function guardarMovimiento(prId, tipo){
   cuentasExpandidas.add(prId);
   render();
   showToast(tipo==='cargo' ? 'Compra registrada' : 'Pago registrado');
+}
+
+function openEditarMovimientoModal(movId){
+  const m = cuentasMovimientos.find(x=>x.id===movId);
+  if(!m) return;
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Editar ${m.tipo==='cargo' ? 'compra' : 'pago'}</h3>
+      <div class="field"><label>Monto</label><input id="mov_edit_monto" type="number" step="0.01" min="0" value="${Number(m.monto)||0}"></div>
+      <div class="field"><label>Fecha</label><input id="mov_edit_fecha" type="date" value="${m.fecha}"></div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="guardarEdicionMovimiento('${movId}')">Guardar</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function guardarEdicionMovimiento(movId){
+  const m = cuentasMovimientos.find(x=>x.id===movId);
+  if(!m) return;
+  const monto = Number(document.getElementById('mov_edit_monto').value);
+  if(!monto || monto <= 0){ showToast('Poné un monto válido'); return; }
+  const fecha = document.getElementById('mov_edit_fecha').value || m.fecha;
+  m.monto = monto;
+  m.fecha = fecha;
+  saveCuentas();
+  closeModal();
+  render();
+  showToast('Movimiento actualizado');
 }
 
 function updateMovimientoNumeroFactura(movId, value){
