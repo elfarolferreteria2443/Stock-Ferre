@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
     --bg: #eceae4;
@@ -399,6 +400,8 @@ const FIREBASE_CONFIG = {
   appId: "1:644222029908:web:fa3f1881629f992bdbddc1"
 };
 firebase.initializeApp(FIREBASE_CONFIG);
+// Mismo cliente OAuth que usa el proveedor de Google de Firebase (no es secreto, es público para apps web)
+const GOOGLE_OAUTH_CLIENT_ID = '644222029908-vjmohal0rla35drd1bvhg5big9dsai6k.apps.googleusercontent.com';
 
 const EMAILS_AUTORIZADOS = [
   'elfarol.ferreteria2443@gmail.com',
@@ -410,7 +413,7 @@ function iniciarSesionGoogle(){
   const errBox = document.getElementById('loginError');
   if(errBox) errBox.textContent = '';
   sessionStorage.setItem('loginRedirectPendiente', '1');
-  firebase.auth().signInWithRedirect(crearGoogleProviderConGmail());
+  firebase.auth().signInWithRedirect(new firebase.auth.GoogleAuthProvider());
 }
 
 function cerrarSesion(){
@@ -445,44 +448,16 @@ firebase.auth().onAuthStateChanged(async (user) => {
   }
 });
 
-function esperarDatosListos(cb, intentos){
-  intentos = intentos || 0;
-  if(window.__datosListos || intentos >= 20){
-    cb();
-  } else {
-    setTimeout(()=> esperarDatosListos(cb, intentos+1), 300);
-  }
-}
-
 firebase.auth().getRedirectResult().then(result => {
   const habiaLoginPendiente = !!sessionStorage.getItem('loginRedirectPendiente');
-  const habiaGmailPendiente = !!sessionStorage.getItem('gmailReconectando');
   sessionStorage.removeItem('loginRedirectPendiente');
   if(!result || !result.user){
-    console.log('getRedirectResult sin resultado. login pendiente:', habiaLoginPendiente, '| gmail pendiente:', habiaGmailPendiente);
+    console.log('getRedirectResult sin resultado. login pendiente:', habiaLoginPendiente);
     if(habiaLoginPendiente){
       const errBox = document.getElementById('loginError');
       if(errBox) errBox.textContent = 'Volviste de Google pero el navegador no pudo completar el login (no hubo error, pero tampoco sesión). Esto suele pasar si el navegador bloquea cookies/almacenamiento de terceros. Probá: 1) otro navegador, 2) desactivar bloqueadores de anuncios/privacidad para este sitio, o 3) permitir cookies de terceros para *.firebaseapp.com y *.google.com.';
     }
-    if(habiaGmailPendiente){
-      sessionStorage.removeItem('gmailReconectando');
-      sessionStorage.removeItem('gmailReconectarProveedor');
-      showToast('No se pudo conectar con Gmail (volviste de Google pero sin sesión nueva). Probá de nuevo.');
-    }
     return;
-  }
-  const cred = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
-  console.log('getRedirectResult con resultado. ¿Tiene credential de Google?', !!cred, '| ¿tiene accessToken?', !!(cred && cred.accessToken));
-  if(cred && cred.accessToken) gmailAccessToken = cred.accessToken;
-  if(sessionStorage.getItem('gmailReconectando')){
-    sessionStorage.removeItem('gmailReconectando');
-    const prId = sessionStorage.getItem('gmailReconectarProveedor');
-    sessionStorage.removeItem('gmailReconectarProveedor');
-    if(prId && gmailAccessToken){
-      esperarDatosListos(()=>{ showToast('Gmail conectado, buscando...'); buscarListaGmail(prId); });
-    }else if(prId){
-      showToast('Confirmaste la cuenta de Google pero no llegó el permiso de Gmail. Probá "Buscar en Gmail" de nuevo.');
-    }
   }
 }).catch(err => {
   const errBox = document.getElementById('loginError');
@@ -557,24 +532,33 @@ async function saveConfiguracion(){
 /* ---------------- Integración con Gmail (buscar listas de precios) ---------------- */
 let gmailAccessToken = null;
 
-function crearGoogleProviderConGmail(soloParaReconexion){
-  const provider = new firebase.auth.GoogleAuthProvider();
-  provider.addScope('https://www.googleapis.com/auth/gmail.readonly');
-  if(soloParaReconexion){
-    // 'prompt: consent' fuerza a Google a reemitir el permiso y devolver un accessToken nuevo,
-    // en vez de saltear la pantalla y no devolver nada si ya estaba autorizado antes.
-    const params = { prompt: 'consent' };
-    if(configCuentaGmail) params.login_hint = configCuentaGmail;
-    provider.setCustomParameters(params);
-  }
-  return provider;
-}
-
+/* Pide el permiso de Gmail con Google Identity Services (independiente del login de Firebase).
+   Evita el problema de signInWithRedirect al pedir un permiso extra estando ya logueado, que
+   no siempre devuelve el token de acceso. */
 function reconectarGmail(proveedorId){
-  if(proveedorId) sessionStorage.setItem('gmailReconectarProveedor', proveedorId);
-  sessionStorage.setItem('gmailReconectando', '1');
-  showToast('Te llevamos a confirmar el permiso de Gmail...');
-  firebase.auth().signInWithRedirect(crearGoogleProviderConGmail(true));
+  if(!window.google || !google.accounts || !google.accounts.oauth2){
+    showToast('Todavía está cargando el sistema de Google. Esperá un segundo y probá de nuevo.');
+    return;
+  }
+  showToast('Confirmá el permiso de Gmail en la ventana que se abrió...');
+  const client = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    scope: 'https://www.googleapis.com/auth/gmail.readonly',
+    hint: configCuentaGmail || undefined,
+    callback: (tokenResponse) => {
+      if(tokenResponse && tokenResponse.access_token){
+        gmailAccessToken = tokenResponse.access_token;
+        showToast('Gmail conectado, buscando...');
+        if(proveedorId) buscarListaGmail(proveedorId);
+      }else{
+        showToast('No se pudo obtener el permiso de Gmail.');
+      }
+    },
+    error_callback: (err) => {
+      showToast('No se pudo conectar con Gmail: ' + (err && err.type ? err.type : 'error desconocido'));
+    }
+  });
+  client.requestAccessToken({ prompt: 'consent' });
 }
 
 async function gmailFetch(url){
