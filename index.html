@@ -455,17 +455,24 @@ function esperarDatosListos(cb, intentos){
 }
 
 firebase.auth().getRedirectResult().then(result => {
-  const habiaRedirectPendiente = !!sessionStorage.getItem('loginRedirectPendiente');
+  const habiaLoginPendiente = !!sessionStorage.getItem('loginRedirectPendiente');
+  const habiaGmailPendiente = !!sessionStorage.getItem('gmailReconectando');
   sessionStorage.removeItem('loginRedirectPendiente');
   if(!result || !result.user){
-    console.log('getRedirectResult sin resultado. ¿Había un login en curso?', habiaRedirectPendiente);
-    if(habiaRedirectPendiente){
+    console.log('getRedirectResult sin resultado. login pendiente:', habiaLoginPendiente, '| gmail pendiente:', habiaGmailPendiente);
+    if(habiaLoginPendiente){
       const errBox = document.getElementById('loginError');
       if(errBox) errBox.textContent = 'Volviste de Google pero el navegador no pudo completar el login (no hubo error, pero tampoco sesión). Esto suele pasar si el navegador bloquea cookies/almacenamiento de terceros. Probá: 1) otro navegador, 2) desactivar bloqueadores de anuncios/privacidad para este sitio, o 3) permitir cookies de terceros para *.firebaseapp.com y *.google.com.';
+    }
+    if(habiaGmailPendiente){
+      sessionStorage.removeItem('gmailReconectando');
+      sessionStorage.removeItem('gmailReconectarProveedor');
+      showToast('No se pudo conectar con Gmail (volviste de Google pero sin sesión nueva). Probá de nuevo.');
     }
     return;
   }
   const cred = firebase.auth.GoogleAuthProvider.credentialFromResult(result);
+  console.log('getRedirectResult con resultado. ¿Tiene credential de Google?', !!cred, '| ¿tiene accessToken?', !!(cred && cred.accessToken));
   if(cred && cred.accessToken) gmailAccessToken = cred.accessToken;
   if(sessionStorage.getItem('gmailReconectando')){
     sessionStorage.removeItem('gmailReconectando');
@@ -473,6 +480,8 @@ firebase.auth().getRedirectResult().then(result => {
     sessionStorage.removeItem('gmailReconectarProveedor');
     if(prId && gmailAccessToken){
       esperarDatosListos(()=>{ showToast('Gmail conectado, buscando...'); buscarListaGmail(prId); });
+    }else if(prId){
+      showToast('Confirmaste la cuenta de Google pero no llegó el permiso de Gmail. Probá "Buscar en Gmail" de nuevo.');
     }
   }
 }).catch(err => {
@@ -551,8 +560,12 @@ let gmailAccessToken = null;
 function crearGoogleProviderConGmail(soloParaReconexion){
   const provider = new firebase.auth.GoogleAuthProvider();
   provider.addScope('https://www.googleapis.com/auth/gmail.readonly');
-  if(soloParaReconexion && configCuentaGmail){
-    provider.setCustomParameters({ login_hint: configCuentaGmail });
+  if(soloParaReconexion){
+    // 'prompt: consent' fuerza a Google a reemitir el permiso y devolver un accessToken nuevo,
+    // en vez de saltear la pantalla y no devolver nada si ya estaba autorizado antes.
+    const params = { prompt: 'consent' };
+    if(configCuentaGmail) params.login_hint = configCuentaGmail;
+    provider.setCustomParameters(params);
   }
   return provider;
 }
