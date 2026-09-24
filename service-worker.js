@@ -1,6 +1,6 @@
 // Subir este número cada vez que se suba un cambio importante del HTML/CSS/JS
 // (fuerza a los dispositivos ya instalados a bajar la versión nueva).
-const CACHE_NAME = 'ferreteria-v3';
+const CACHE_NAME = 'ferreteria-v4';
 
 const APP_SHELL = [
   './',

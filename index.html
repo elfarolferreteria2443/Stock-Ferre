@@ -3111,8 +3111,8 @@ function renderCuentas(){
       return { ...m, saldoCorrido: corrido };
     });
     const movsFiltrados = movsConSaldo
-      .filter(m => (!cuentasFiltroMes || m.fecha.slice(5,7) === cuentasFiltroMes) && (!cuentasFiltroAnio || m.fecha.slice(0,4) === cuentasFiltroAnio));
-      // ya quedan en orden ascendente (los agregados nuevos aparecen abajo)
+      .filter(m => (!cuentasFiltroMes || m.fecha.slice(5,7) === cuentasFiltroMes) && (!cuentasFiltroAnio || m.fecha.slice(0,4) === cuentasFiltroAnio))
+      .reverse(); // el saldo corrido se calcula en orden de fecha, pero se muestra lo más nuevo arriba
 
     const colorSaldo = saldo > 0 ? 'var(--danger)' : (saldo < 0 ? 'var(--good)' : 'var(--ink-soft)');
     const etiquetaSaldo = saldo > 0 ? 'Le debemos' : (saldo < 0 ? 'A nuestro favor' : 'Al día');
@@ -3132,7 +3132,7 @@ function renderCuentas(){
         </tr></thead><tbody>
           ${movsFiltrados.map(m=>`<tr>
             <td>${m.fecha}</td>
-            <td><span class="badge ${m.tipo==='cargo'?'warn':'good'}">${m.tipo==='cargo'?'Compra':'Pago'}</span></td>
+            <td><span class="badge ${m.tipo==='cargo'?'warn':'good'}">${m.tipo==='cargo'?'Compra':'Pago'}</span>${m.tipo==='cargo' ? ' ' + badgeModalidad(m.modalidad) : ''}</td>
             <td class="price">${money(m.monto)}</td>
             <td><input type="text" value="${esc(m.nota||'')}" placeholder="Escribir..." style="width:110px; padding:5px; border:1px solid var(--line); border-radius:6px;" onchange="updateMovimientoNumeroFactura('${m.id}', this.value)"></td>
             <td>
@@ -3168,7 +3168,8 @@ function openMovimientoModal(prId, tipo){
     <div class="modal">
       <h3>${tipo==='cargo' ? 'Registrar compra' : 'Registrar pago'}</h3>
       <div class="subtitle">${esc(pr.nombre)}</div>
-      <div class="field"><label>Monto</label><input id="mov_monto" type="number" step="0.01" min="0" placeholder="0"></div>
+      ${tipo === 'cargo' ? selectorModalidadHtml('') : ''}
+      ${campoMontoHtml('mov_monto', '')}
       <div class="field"><label>Fecha</label><input id="mov_fecha" type="date" value="${today()}"></div>
       <div class="field"><label>Nº de factura</label><input id="mov_nota" type="text" placeholder="Opcional, ej: 0001-00001234"></div>
       ${tipo === 'cargo' ? `<div class="global-pct-note">La fecha de factura arranca igual a la Fecha de arriba — después la podés correr día por día con las flechitas de la tabla.</div>` : ''}
@@ -3180,12 +3181,68 @@ function openMovimientoModal(prId, tipo){
   </div>`;
 }
 
+/* Monto escrito a mano: el punto y la coma valen lo mismo. Si el último separador
+   tiene 1 o 2 dígitos después, son los centavos; todos los demás separadores se
+   toman como separador de miles. Ej: "122.000,22" = "122,000.22" = "122.000.22"
+   = 122000.22 ; "1.500" = "1,500" = 1500 ; "1,5" = 1.5 */
+function parseMontoFlexible(texto){
+  let s = String(texto == null ? '' : texto).replace(/[$\s]/g, '');
+  if(s === '') return NaN;
+  if(!/^\d[\d.,]*$/.test(s)) return NaN;
+  s = s.replace(/[.,]+$/, '');
+  const ultimo = Math.max(s.lastIndexOf('.'), s.lastIndexOf(','));
+  if(ultimo === -1) return Number(s);
+  const despues = s.slice(ultimo + 1);
+  const antes = s.slice(0, ultimo).replace(/[.,]/g, '');
+  if(despues.length === 3) return Number(antes + despues); // separador de miles
+  return Number(antes + '.' + despues);
+}
+
+function campoMontoHtml(inputId, valorInicial){
+  return `<div class="field"><label>Monto</label>
+    <input id="${inputId}" type="text" inputmode="decimal" autocomplete="off" placeholder="Ej: 122.000,50" value="${esc(valorInicial)}" oninput="previewMonto('${inputId}')">
+    <div class="meta" id="${inputId}_preview" style="margin-top:4px; min-height:16px;"></div>
+  </div>`;
+}
+
+function previewMonto(inputId){
+  const el = document.getElementById(inputId + '_preview');
+  if(!el) return;
+  const txt = document.getElementById(inputId).value;
+  if(txt.trim() === ''){ el.textContent = ''; return; }
+  const n = parseMontoFlexible(txt);
+  el.innerHTML = isNaN(n)
+    ? `<span style="color:var(--danger);">No se entiende el monto</span>`
+    : `Se va a guardar: <b>${money(n, 2)}</b>`;
+}
+
+function badgeModalidad(modalidad){
+  if(modalidad === 'blanco') return `<span class="badge" style="background:#fff; color:var(--ink); border:1px solid var(--line);">Blanco</span>`;
+  if(modalidad === 'negro') return `<span class="badge" style="background:var(--ink); color:#fff;">Negro</span>`;
+  return '';
+}
+
+function selectorModalidadHtml(actual){
+  const opcion = (val, texto) => `<label style="display:flex; align-items:center; gap:6px; cursor:pointer; padding:8px 14px; border:1px solid var(--line); border-radius:8px; font-weight:600; white-space:nowrap; margin:0;">
+      <input type="radio" name="mov_modalidad" value="${val}" ${actual===val?'checked':''}> ${texto}</label>`;
+  return `<div class="field"><label>¿En blanco o en negro?</label>
+    <div style="display:flex; gap:10px;">${opcion('blanco','En blanco')}${opcion('negro','En negro')}</div>
+  </div>`;
+}
+
+function modalidadElegida(){
+  const r = document.querySelector('input[name="mov_modalidad"]:checked');
+  return r ? r.value : '';
+}
+
 function guardarMovimiento(prId, tipo){
-  const monto = Number(document.getElementById('mov_monto').value);
+  const monto = parseMontoFlexible(document.getElementById('mov_monto').value);
   if(!monto || monto <= 0){ showToast('Poné un monto válido'); return; }
+  const modalidad = tipo === 'cargo' ? modalidadElegida() : '';
+  if(tipo === 'cargo' && !modalidad){ showToast('Elegí si la compra es en blanco o en negro'); return; }
   const fecha = document.getElementById('mov_fecha').value || today();
   const nota = document.getElementById('mov_nota').value.trim();
-  cuentasMovimientos.push({ id: uid(), proveedorId: prId, tipo, monto, fecha, nota, facturaFecha: tipo==='cargo' ? fecha : '', notaExtra: '' });
+  cuentasMovimientos.push({ id: uid(), proveedorId: prId, tipo, monto, fecha, nota, facturaFecha: tipo==='cargo' ? fecha : '', notaExtra: '', modalidad });
   saveCuentas();
   closeModal();
   cuentasExpandidas.add(prId);
@@ -3201,7 +3258,8 @@ function openEditarMovimientoModal(movId){
   <div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
       <h3>Editar ${m.tipo==='cargo' ? 'compra' : 'pago'}</h3>
-      <div class="field"><label>Monto</label><input id="mov_edit_monto" type="number" step="0.01" min="0" value="${Number(m.monto)||0}"></div>
+      ${m.tipo === 'cargo' ? selectorModalidadHtml(m.modalidad || '') : ''}
+      ${campoMontoHtml('mov_edit_monto', String(Number(m.monto)||0).replace('.', ','))}
       <div class="field"><label>Fecha</label><input id="mov_edit_fecha" type="date" value="${m.fecha}"></div>
       <div class="modal-actions">
         <button class="btn secondary" onclick="closeModal()">Cancelar</button>
@@ -3214,11 +3272,14 @@ function openEditarMovimientoModal(movId){
 function guardarEdicionMovimiento(movId){
   const m = cuentasMovimientos.find(x=>x.id===movId);
   if(!m) return;
-  const monto = Number(document.getElementById('mov_edit_monto').value);
+  const monto = parseMontoFlexible(document.getElementById('mov_edit_monto').value);
   if(!monto || monto <= 0){ showToast('Poné un monto válido'); return; }
+  const modalidad = m.tipo === 'cargo' ? modalidadElegida() : '';
+  if(m.tipo === 'cargo' && !modalidad){ showToast('Elegí si la compra es en blanco o en negro'); return; }
   const fecha = document.getElementById('mov_edit_fecha').value || m.fecha;
   m.monto = monto;
   m.fecha = fecha;
+  if(m.tipo === 'cargo') m.modalidad = modalidad;
   saveCuentas();
   closeModal();
   render();
