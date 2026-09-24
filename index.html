@@ -74,6 +74,7 @@
   nav.tabs button.active{ color:#fff; border-bottom-color:var(--accent); }
 
   main{ max-width:1440px; margin:0 auto; padding:20px 16px 80px 16px; }
+  main.full-bleed{ max-width:100%; }
 
   .toolbar{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:16px; }
   .toolbar input[type="text"], .toolbar select{
@@ -87,6 +88,24 @@
   .search-wrap input[type="text"]{ flex:1; min-width:0; }
   .search-wrap .icon-btn{ width:26px; height:26px; font-size:13px; flex-shrink:0; }
 
+  .subtabs-full{ display:flex; width:100%; margin-bottom:16px; border-radius:9px; overflow:hidden; border:1px solid var(--line); box-shadow:var(--shadow); }
+  .subtab-btn{ flex:1; padding:12px 14px; border:none; background:#fff; color:var(--ink-soft); font-weight:700; font-size:13.5px; cursor:pointer; text-transform:uppercase; letter-spacing:0.02em; font-family:inherit; }
+  .subtab-btn.active{ background:var(--accent); color:var(--accent-ink); }
+  .subtab-btn:not(.active):hover{ background:var(--bg); }
+  .sel-box{
+    display:inline-block; width:16px; height:16px; border:2px solid #c7c3b8; border-radius:4px;
+    background:#fff; vertical-align:middle; position:relative;
+  }
+  .sel-box.checked{ background:var(--accent); border-color:var(--accent); }
+  .sel-box.checked::after{
+    content:'✓'; position:absolute; left:1px; top:-4px; color:#fff; font-size:12px; font-weight:800;
+  }
+  tr.row-selected{ background:#fdeee3 !important; }
+  .sel-bar{
+    display:none; align-items:center; gap:12px; background:var(--ink); color:#fff; padding:9px 14px;
+    border-radius:8px; margin-bottom:12px; font-size:13.5px;
+  }
+  .sel-bar.show{ display:flex; }
   .stock-layout{ display:flex; gap:16px; align-items:flex-start; width:100%; }
   .stock-main{ flex:1 1 0%; min-width:0; }
   .table-scroll{ overflow:auto; max-width:100%; max-height:58vh; border-radius:var(--radius); }
@@ -390,6 +409,10 @@ let selectedProductId = null;
 let detalleExpandido = false;
 let dashExpandido = false;
 function toggleDash(){ dashExpandido = !dashExpandido; render(); }
+let stockSubTab = 'control'; // 'productos' (el maestro) o 'control' (todas las listas de precios)
+let stockSeleccionados = new Set();
+let arrastrandoSeleccion = false;
+let modoArrastre = 'agregar';
 let openPedidoIds = new Set();
 let proveedoresExpandidos = new Set();
 let globalPctVisible = false;
@@ -513,6 +536,9 @@ async function loadAll(){
   try{ const v = await fbGet('ventas'); ventas = Array.isArray(v) ? v : []; }catch(e){ ventas = []; }
   try{ const v = await fbGet('maestros'); maestros = Array.isArray(v) ? v : []; }catch(e){ maestros = []; }
   try{ const v = await fbGet('colWidths'); if(v) Object.assign(colWidths, v); }catch(e){ /* usa los valores por defecto */ }
+  // Asegura un mínimo para que los botones nuevos no se amontonen, aunque el usuario tenga guardado un ancho viejo más chico
+  if((Number(colWidths.acciones)||0) < 150) colWidths.acciones = 150;
+  if((Number(colWidths.stock)||0) < 128) colWidths.stock = 128;
   if(colWidths.producto > PRODUCTO_MAX_WIDTH) colWidths.producto = PRODUCTO_MAX_WIDTH;
   try{ const v = await fbGet('globalPct'); if(v){ globalPctTarjeta = Number(v.tarjeta)||0; globalPctIva = Number(v.iva)||0; } }catch(e){ /* usa 0 por defecto */ }
   try{ const v = await fbGet('configuracion'); if(v){ configStockBajoDefault = Number(v.stockBajoDefault)||0; configRedondeoStep = Number(v.redondeoStep)||1; configWhatsappModo = v.whatsappModo === 'escritorio' ? 'escritorio' : 'web'; configCuentaGmail = v.cuentaGmail || ''; } }catch(e){ /* usa los valores por defecto */ }
@@ -919,7 +945,8 @@ function render(){
   const prevScrollEl = document.querySelector('.table-scroll');
   const prevScrollTop = prevScrollEl ? prevScrollEl.scrollTop : null;
   const main = document.getElementById('main');
-  if(currentTab === 'stock') main.innerHTML = renderStock();
+  main.classList.toggle('full-bleed', currentTab === 'stock');
+  if(currentTab === 'stock') main.innerHTML = renderStockConSubtabs();
   else if(currentTab === 'pedidos'){
     main.innerHTML = renderPedidos();
     const wrap = document.getElementById('pedidosListWrap');
@@ -1028,6 +1055,141 @@ function listaStockParaMostrar(){
   return [...sueltos, ...filasMaestro];
 }
 
+function cambiarSubTabStock(tab){
+  stockSubTab = tab;
+  stockSeleccionados.clear();
+  render();
+}
+
+function renderStockConSubtabs(){
+  let html = `<div class="subtabs-full">
+    <button class="subtab-btn ${stockSubTab==='productos'?'active':''}" onclick="cambiarSubTabStock('productos')">Mis productos</button>
+    <button class="subtab-btn ${stockSubTab==='control'?'active':''}" onclick="cambiarSubTabStock('control')">Control de stock</button>
+  </div>`;
+  html += stockSubTab === 'productos' ? renderMisProductos() : renderStock();
+  return html;
+}
+
+function renderMisProductos(){
+  if(maestros.length === 0){
+    return `<div class="empty"><div class="big">Todavía no armaste tu catálogo propio</div>
+      <div>Andá a "Control de stock", elegí los productos que sean lo mismo de distintos proveedores (con el tilde o arrastrando) y unilos en un maestro. Acá vas a ver ese catálogo limpio, con tu propio precio y stock.</div></div>`;
+  }
+  let html = `<div class="table-scroll"><table>
+    <thead><tr>
+      <th>Rubro</th><th>UM</th><th>Producto</th><th>Precio de venta</th><th>Stock</th><th></th>
+    </tr></thead><tbody>`;
+  const ordenados = [...maestros].sort((a,b)=> a.nombre.localeCompare(b.nombre));
+  for(const m of ordenados){
+    const bajo = Number(m.stock) <= Number(m.stockMin||0);
+    const sel = m.id === selectedProductId;
+    html += `<tr data-id="${m.id}" onclick="selectProducto('${m.id}')" style="cursor:pointer; ${sel?'background:#faf0e8;':''}">
+      <td data-label="Rubro" class="cell-trunc">${m.categoria?esc(m.categoria):'—'}</td>
+      <td data-label="UM" class="cell-trunc">${m.presentacion?esc(m.presentacion):'UN'}</td>
+      <td data-label="Producto" class="cell-trunc" title="${esc(m.nombre)}">🔗 ${esc(m.nombre)}</td>
+      <td data-label="Precio de venta" class="price">${money(m.venta)}</td>
+      <td data-label="Stock">
+        <div class="stock-adjust" onclick="event.stopPropagation()">
+          <button type="button" class="qty-btn" title="Restar 1" onclick="adjustStockMaestro('${m.id}', -1)">−</button>
+          <input type="number" value="${Number(m.stock)||0}" onchange="setStockMaestro('${m.id}', this.value)">
+          <button type="button" class="qty-btn" title="Sumar 1" onclick="adjustStockMaestro('${m.id}', 1)">+</button>
+          ${bajo ? `<span title="Stock bajo" style="color:#d4a017; font-size:15px; font-weight:800;">▼</span>` : ''}
+        </div>
+      </td>
+      <td data-label="">
+        <div class="row-actions" onclick="event.stopPropagation()">
+          <button class="icon-btn" title="Editar" onclick="openMaestroModal('${m.id}')">✎</button>
+          <button class="icon-btn" title="Registrar faltante" onclick="openFaltantePicker('${m.id}')">🛒</button>
+        </div>
+      </td>
+    </tr>`;
+  }
+  html += `</tbody></table></div>`;
+  return html;
+}
+
+/* ---- Selección múltiple (para unir varios en un maestro de una sola vez) ---- */
+function iniciarSeleccionDrag(id, ev){
+  arrastrandoSeleccion = true;
+  modoArrastre = stockSeleccionados.has(id) ? 'quitar' : 'agregar';
+  aplicarSeleccion(id, modoArrastre);
+  ev.preventDefault();
+}
+function arrastrarSobre(id){
+  if(!arrastrandoSeleccion) return;
+  aplicarSeleccion(id, modoArrastre);
+}
+function aplicarSeleccion(id, modo){
+  if(modo === 'agregar') stockSeleccionados.add(id);
+  else stockSeleccionados.delete(id);
+  const row = document.querySelector(`tr[data-id="${id}"]`);
+  if(row){
+    const box = row.querySelector('.sel-box');
+    if(box) box.classList.toggle('checked', stockSeleccionados.has(id));
+    row.classList.toggle('row-selected', stockSeleccionados.has(id));
+  }
+  actualizarBarraSeleccion();
+}
+document.addEventListener('mouseup', ()=>{ arrastrandoSeleccion = false; });
+function actualizarBarraSeleccion(){
+  const bar = document.getElementById('selBar');
+  if(!bar) return;
+  const n = stockSeleccionados.size;
+  bar.classList.toggle('show', n >= 2);
+  const span = bar.querySelector('.sel-count');
+  if(span) span.textContent = `${n} productos seleccionados`;
+}
+function limpiarSeleccion(){
+  stockSeleccionados.clear();
+  render();
+}
+function abrirUnirSeleccionadosModal(){
+  const ids = [...stockSeleccionados];
+  const items = productos.filter(p => ids.includes(p.id) && !p.maestroId);
+  if(items.length < 2){ showToast('Elegí al menos 2 productos para unir'); return; }
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Unir ${items.length} productos en un maestro</h3>
+      <div class="subtitle">${items.map(p=>esc(p.nombre + ' — ' + (p.proveedor||'sin proveedor'))).join('<br>')}</div>
+      <div class="field"><label>Nombre del producto (el que vas a usar vos)</label><input id="unir_nombre" type="text" value="${esc(items[0].nombre)}"></div>
+      <div class="field-row">
+        <div class="field"><label>Código interno (opcional)</label><input id="unir_codigo" type="text" placeholder="Tu código"></div>
+        <div class="field"><label>Precio de venta</label><input id="unir_venta" type="number" min="0" step="0.01" value="${Number(items[0].venta)||0}"></div>
+      </div>
+      <div class="field"><label>Stock mínimo</label><input id="unir_stockmin" type="number" min="0" value="${Math.max(...items.map(p=>Number(p.stockMin)||0))}"></div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="confirmarUnirSeleccionados()">Crear maestro con estos ${items.length}</button>
+      </div>
+    </div>
+  </div>`;
+}
+function confirmarUnirSeleccionados(){
+  const ids = [...stockSeleccionados];
+  const items = productos.filter(p => ids.includes(p.id) && !p.maestroId);
+  if(items.length < 2) return;
+  const nombre = document.getElementById('unir_nombre').value.trim();
+  if(!nombre){ showToast('Poné un nombre'); return; }
+  const codigo = document.getElementById('unir_codigo').value.trim();
+  const venta = Math.max(0, Number(document.getElementById('unir_venta').value)||0);
+  const stockMin = Math.max(0, Math.round(Number(document.getElementById('unir_stockmin').value)||0));
+  const stockTotal = items.reduce((a,p)=>a+(Number(p.stock)||0), 0);
+  const maestro = {
+    id: uid(), nombre, codigo, venta, stockMin, stock: stockTotal,
+    categoria: items[0].categoria || '', presentacion: items[0].presentacion || '',
+  };
+  maestros.push(maestro);
+  items.forEach(p => { p.maestroId = maestro.id; p.stock = 0; });
+  stockSeleccionados.clear();
+  saveMaestros();
+  saveProductos();
+  closeModal();
+  render();
+  showToast(`Maestro creado con ${items.length} proveedores`);
+}
+
 function renderStock(){
   const cats = categorias();
   const hasQuery = searchStock.trim() !== '' || filterCat !== '';
@@ -1074,6 +1236,12 @@ function renderStock(){
     </select>
   </div>`;
 
+  html += `<div class="sel-bar ${stockSeleccionados.size>=2?'show':''}" id="selBar">
+    <span class="sel-count">${stockSeleccionados.size} productos seleccionados</span>
+    <button class="btn small" style="background:#fff; color:var(--ink);" onclick="abrirUnirSeleccionadosModal()">Unir en un maestro</button>
+    <button class="btn secondary small" onclick="limpiarSeleccion()">Cancelar</button>
+  </div>`;
+
   html += `<div class="stock-layout">`;
   html += `<div class="stock-main">`;
 
@@ -1087,6 +1255,7 @@ function renderStock(){
     const cw = colWidths;
     html += `<div class="table-scroll"><table class="resizable">
       <colgroup>
+        <col data-col="sel" style="width:30px;">
         <col data-col="pedidoEstado" style="width:${cw.pedidoEstado}px;">
         <col data-col="proveedor" style="width:${cw.proveedor}px;">
         <col data-col="codigo" style="width:${cw.codigo}px;">
@@ -1098,6 +1267,7 @@ function renderStock(){
         <col data-col="acciones" style="width:${cw.acciones}px;">
       </colgroup>
       <thead><tr>
+      <th></th>
       <th title="Estado del pedido: rojo = pedido pendiente, naranja = pedido vencido, amarillo = llegó pero faltó este producto"></th>
       <th class="cell-trunc th-sort" onclick="sortStockColumn('proveedor')">Proveedor${flechaOrden('proveedor')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'proveedor')"></span></th>
       <th class="cell-trunc th-sort" onclick="sortStockColumn('codigo')">Código${flechaOrden('codigo')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'codigo')"></span></th>
@@ -1113,7 +1283,11 @@ function renderStock(){
       const bajo = Number(p.stock) <= Number(p.stockMin||0);
       const sel = p.id === selectedProductId;
       const idsIndicador = p.esMaestro ? p.opciones.map(o=>o.id) : [p.id];
-      html += `<tr data-id="${p.id}" onclick="selectProducto('${p.id}')" style="cursor:pointer; ${sel?'background:#faf0e8;':''}">
+      const marcado = stockSeleccionados.has(p.id);
+      html += `<tr data-id="${p.id}" onclick="selectProducto('${p.id}')" class="${marcado?'row-selected':''}" style="cursor:pointer; ${sel?'background:#faf0e8;':''}">
+        <td data-label="" style="text-align:center; ${p.esMaestro?'':'cursor:pointer;'}" onclick="event.stopPropagation()" ${p.esMaestro?'':`onmousedown="iniciarSeleccionDrag('${p.id}', event)" onmouseenter="arrastrarSobre('${p.id}')"`}>
+          ${p.esMaestro ? '' : `<span class="sel-box ${marcado?'checked':''}"></span>`}
+        </td>
         <td data-label="" style="text-align:center;">${(()=>{
           const ind = getPedidoIndicator(idsIndicador);
           if(!ind) return '';
