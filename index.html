@@ -1071,40 +1071,76 @@ function renderStockConSubtabs(){
 }
 
 function renderMisProductos(){
+  const cats = categorias();
+  const tokens = searchStock.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  let list = maestros.filter(m=>{
+    const ops = opcionesDelMaestro(m.id);
+    const extra = ops.map(o=>`${o.nombre} ${o.codigo||''} ${o.proveedor||''}`).join(' ');
+    const haystack = `${m.nombre} ${m.codigo||''} ${m.categoria||''} ${extra}`.toLowerCase();
+    const matchS = tokens.length === 0 || tokens.every(t => haystack.includes(t));
+    const matchC = !filterCat || m.categoria === filterCat;
+    return matchS && matchC;
+  });
+  list.sort((a,b)=> a.nombre.localeCompare(b.nombre));
+
+  let html = `<div class="toolbar">
+    <div class="search-wrap">
+      <input id="stock_search_input" type="text" placeholder="Buscar producto, código... (Enter para buscar)" value="${esc(searchStock)}" onkeydown="if(event.key==='Enter'){ stockSearchSubmit(this.value); }">
+      <button class="icon-btn" title="Buscar" onclick="stockSearchSubmit(document.getElementById('stock_search_input').value)">🔎</button>
+      ${searchStock ? `<button class="icon-btn" title="Limpiar búsqueda" onclick="clearStockSearch()">✕</button>` : ''}
+    </div>
+    <select onchange="filterCat=this.value; render()">
+      <option value="">Todas las categorías</option>
+      ${cats.map(c=>`<option value="${esc(c)}" ${filterCat===c?'selected':''}>${esc(c)}</option>`).join('')}
+    </select>
+  </div>`;
+
+  html += `<div class="stock-layout"><div class="stock-main">`;
+
   if(maestros.length === 0){
-    return `<div class="empty"><div class="big">Todavía no armaste tu catálogo propio</div>
+    html += `<div class="empty"><div class="big">Todavía no armaste tu catálogo propio</div>
       <div>Andá a "Control de stock", elegí los productos que sean lo mismo de distintos proveedores (con el tilde o arrastrando) y unilos en un maestro. Acá vas a ver ese catálogo limpio, con tu propio precio y stock.</div></div>`;
+  }else if(list.length === 0){
+    html += `<div class="empty"><div class="big">No hay resultados</div>
+      <div>Probá con otra búsqueda o categoría.</div></div>`;
+  }else{
+    html += `<div class="table-scroll"><table>
+      <thead><tr>
+        <th>Rubro</th><th>UM</th><th>Producto</th><th>Precio de venta</th><th>Stock</th><th></th>
+      </tr></thead><tbody>`;
+    for(const m of list){
+      const bajo = Number(m.stock) <= Number(m.stockMin||0);
+      const sel = m.id === selectedProductId;
+      const alerta = alertaAumentoDe(m.id);
+      html += `<tr data-id="${m.id}" onclick="selectProducto('${m.id}')" style="cursor:pointer; ${sel?'background:#faf0e8;':''}">
+        <td data-label="Rubro" class="cell-trunc">${m.categoria?esc(m.categoria):'—'}</td>
+        <td data-label="UM" class="cell-trunc">${m.presentacion?esc(m.presentacion):'UN'}</td>
+        <td data-label="Producto" class="cell-trunc" title="${esc(m.nombre)}">🔗 ${esc(m.nombre)}</td>
+        <td data-label="Precio de venta" class="price cell-trunc">
+          ${money(m.venta)}
+          ${alerta.subidas.length ? `<span title="${esc(alerta.subidas.map(s=>`${s.proveedor} subió ${s.pct.toFixed(0)}% (antes ${money(s.antes)}, ahora ${money(s.ahora)})`).join(' · '))}" style="color:var(--danger); cursor:help;"> ⚠</span> <button class="btn small secondary" style="padding:2px 6px; font-size:11px;" onclick="event.stopPropagation(); ajustarVentaPorAumento('${m.id}', ${alerta.sugeridoPct.toFixed(2)})" title="Subir mi precio de venta ${alerta.sugeridoPct.toFixed(0)}%, igual que subió el costo">+${alerta.sugeridoPct.toFixed(0)}%</button>` : ''}
+        </td>
+        <td data-label="Stock">
+          <div class="stock-adjust" onclick="event.stopPropagation()">
+            <button type="button" class="qty-btn" title="Restar 1" onclick="adjustStockMaestro('${m.id}', -1)">−</button>
+            <input type="number" value="${Number(m.stock)||0}" onchange="setStockMaestro('${m.id}', this.value)">
+            <button type="button" class="qty-btn" title="Sumar 1" onclick="adjustStockMaestro('${m.id}', 1)">+</button>
+            ${bajo ? `<span title="Stock bajo" style="color:#d4a017; font-size:15px; font-weight:800;">▼</span>` : ''}
+          </div>
+        </td>
+        <td data-label="">
+          <div class="row-actions" onclick="event.stopPropagation()">
+            <button class="icon-btn" title="Editar" onclick="openMaestroModal('${m.id}')">✎</button>
+            <button class="icon-btn" title="Registrar faltante" onclick="openFaltantePicker('${m.id}')">🛒</button>
+          </div>
+        </td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>`;
   }
-  let html = `<div class="table-scroll"><table>
-    <thead><tr>
-      <th>Rubro</th><th>UM</th><th>Producto</th><th>Precio de venta</th><th>Stock</th><th></th>
-    </tr></thead><tbody>`;
-  const ordenados = [...maestros].sort((a,b)=> a.nombre.localeCompare(b.nombre));
-  for(const m of ordenados){
-    const bajo = Number(m.stock) <= Number(m.stockMin||0);
-    const sel = m.id === selectedProductId;
-    html += `<tr data-id="${m.id}" onclick="selectProducto('${m.id}')" style="cursor:pointer; ${sel?'background:#faf0e8;':''}">
-      <td data-label="Rubro" class="cell-trunc">${m.categoria?esc(m.categoria):'—'}</td>
-      <td data-label="UM" class="cell-trunc">${m.presentacion?esc(m.presentacion):'UN'}</td>
-      <td data-label="Producto" class="cell-trunc" title="${esc(m.nombre)}">🔗 ${esc(m.nombre)}</td>
-      <td data-label="Precio de venta" class="price">${money(m.venta)}</td>
-      <td data-label="Stock">
-        <div class="stock-adjust" onclick="event.stopPropagation()">
-          <button type="button" class="qty-btn" title="Restar 1" onclick="adjustStockMaestro('${m.id}', -1)">−</button>
-          <input type="number" value="${Number(m.stock)||0}" onchange="setStockMaestro('${m.id}', this.value)">
-          <button type="button" class="qty-btn" title="Sumar 1" onclick="adjustStockMaestro('${m.id}', 1)">+</button>
-          ${bajo ? `<span title="Stock bajo" style="color:#d4a017; font-size:15px; font-weight:800;">▼</span>` : ''}
-        </div>
-      </td>
-      <td data-label="">
-        <div class="row-actions" onclick="event.stopPropagation()">
-          <button class="icon-btn" title="Editar" onclick="openMaestroModal('${m.id}')">✎</button>
-          <button class="icon-btn" title="Registrar faltante" onclick="openFaltantePicker('${m.id}')">🛒</button>
-        </div>
-      </td>
-    </tr>`;
-  }
-  html += `</tbody></table></div>`;
+  html += `</div>`; // stock-main
+  html += `<div id="priceDetailPanel">${renderPriceDetail()}</div>`;
+  html += `</div>`; // stock-layout
   return html;
 }
 
@@ -1371,7 +1407,10 @@ function renderPriceDetailMaestro(m){
         const margen = venta>0 ? ((venta-costo)/venta*100) : null;
         const veces = Number(o.vecesRecibido)||0;
         const esRef = masPedida && masPedida.id === o.id;
-        return `<div class="pd-row"><span>${esRef?'★ ':''}${esc(o.proveedor||'—')} <span style="color:var(--ink-soft);">(${esc(o.codigo||'—')}${veces>0?` · pedido ${veces} vez(es)`:''})</span></span><span class="mono">${money(costo)}${margen!=null?` · margen ${margen.toFixed(0)}%`:''}</span></div>`;
+        const antes = Number(o.costoAnterior);
+        const subio = antes > 0 && costo > antes;
+        const aviso = subio ? ` <span title="Antes ${money(antes)}" style="color:var(--danger);">▲${(((costo-antes)/antes)*100).toFixed(0)}%</span>` : '';
+        return `<div class="pd-row"><span>${esRef?'★ ':''}${esc(o.proveedor||'—')} <span style="color:var(--ink-soft);">(${esc(o.codigo||'—')}${veces>0?` · pedido ${veces} vez(es)`:''})</span></span><span class="mono">${money(costo)}${aviso}${margen!=null?` · margen ${margen.toFixed(0)}%`:''}</span></div>`;
       }).join('')}
     </div>` : ''}
   </div>`;
@@ -1507,6 +1546,37 @@ function costoReferenciaMaestro(maestroId){
   const masPedida = opcionMasPedidaDe(maestroId);
   if(masPedida) return Number(masPedida.costo)||0;
   return ops.reduce((a,p)=>a+(Number(p.costo)||0),0) / ops.length;
+}
+
+// Aviso de aumento: compara el costo actual de cada opción de proveedor contra el
+// que tenía antes de la última lista importada. No toca el precio de venta solo;
+// nada más avisa y deja un botón para aplicar el aumento si el usuario quiere.
+function alertaAumentoDe(maestroId){
+  const ops = opcionesDelMaestro(maestroId);
+  const subidas = [];
+  for(const o of ops){
+    const antes = Number(o.costoAnterior);
+    const ahora = Number(o.costo)||0;
+    if(antes > 0 && ahora > antes){
+      subidas.push({ proveedor: o.proveedor||'—', antes, ahora, pct: ((ahora-antes)/antes)*100 });
+    }
+  }
+  if(subidas.length === 0) return { subidas: [], sugeridoPct: null };
+  const masPedida = opcionMasPedidaDe(maestroId);
+  const deLaMasPedida = masPedida ? subidas.find(s => s.proveedor === masPedida.proveedor) : null;
+  const sugeridoPct = deLaMasPedida ? deLaMasPedida.pct : Math.max(...subidas.map(s=>s.pct));
+  return { subidas, sugeridoPct };
+}
+function ajustarVentaPorAumento(maestroId, pct){
+  const m = maestros.find(x=>x.id===maestroId);
+  if(!m) return;
+  const nuevo = Math.round((Number(m.venta)||0) * (1 + pct/100) * 100) / 100;
+  m.venta = nuevo;
+  opcionesDelMaestro(maestroId).forEach(o => { o.costoAnterior = o.costo; });
+  saveMaestros();
+  saveProductos();
+  render();
+  showToast(`Precio de venta ajustado a ${money(nuevo)}`);
 }
 
 function adjustStock(id, delta){
@@ -1688,11 +1758,8 @@ function renderVentas(){
   ${ventasResumenVisible ? `
   <div class="dash">
     <div class="card"><div class="num mono">${money(rHoy.vendido)}${flechaComparativa(rHoy.vendido, rAyer.vendido, false)}</div><div class="lbl">Vendido hoy (${rHoy.unidades} u.)</div></div>
-    <div class="card"><div class="num mono">${money(rHoy.ganancia)}</div><div class="lbl">Ganancia hoy</div></div>
     <div class="card"><div class="num mono">${money(rSemana.vendido)}${flechaComparativa(rSemana.vendido, rSemanaAnt.vendido, false)}</div><div class="lbl">Vendido últimos 7 días (${rSemana.unidades} u.)</div></div>
-    <div class="card"><div class="num mono">${money(rSemana.ganancia)}</div><div class="lbl">Ganancia últimos 7 días</div></div>
     <div class="card"><div class="num mono">${money(rMes.vendido)}${flechaComparativa(rMes.vendido, rMesAnt.vendido, false)}</div><div class="lbl">Vendido en ${nombreMes(keyActual)} (${rMes.unidades} u.)</div></div>
-    <div class="card"><div class="num mono">${money(rMes.ganancia)}</div><div class="lbl">Ganancia en ${nombreMes(keyActual)}</div></div>
   </div>` : ''}`;
 
   if(ventas.length === 0){
@@ -1855,8 +1922,11 @@ function openMaestroModal(maestroId){
       ${(()=>{ const masPedida = opcionMasPedidaDe(m.id); return ops.map(o=>{
         const veces = Number(o.vecesRecibido)||0;
         const esRef = masPedida && masPedida.id === o.id;
+        const antes = Number(o.costoAnterior);
+        const subio = antes > 0 && Number(o.costo) > antes;
+        const aviso = subio ? ` <span style="color:var(--danger);" title="Antes ${money(antes)}">▲ subió ${(((o.costo-antes)/antes)*100).toFixed(0)}%</span>` : '';
         return `<div class="row-actions" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--line);">
-        <span>${esRef?'★ ':''}${esc(o.proveedor||'—')} <span class="meta" style="color:var(--ink-soft); font-size:12px;">cód. ${esc(o.codigo||'—')} · costo ${money(o.costo)}${veces>0?` · pedido ${veces} vez(es)`:''}</span></span>
+        <span>${esRef?'★ ':''}${esc(o.proveedor||'—')} <span class="meta" style="color:var(--ink-soft); font-size:12px;">cód. ${esc(o.codigo||'—')} · costo ${money(o.costo)}${veces>0?` · pedido ${veces} vez(es)`:''}</span>${aviso}</span>
         <button class="icon-btn" title="Quitar de la agrupación" onclick="quitarOpcionDeMaestro('${o.id}')">🗑</button>
       </div>`;
       }).join(''); })()}
@@ -3760,6 +3830,7 @@ async function confirmarImport(){
     if(!r.incluir) continue;
     if(r.match){
       r.match.precioLista = isNaN(r.precioParsed) ? r.match.precioLista : r.precioParsed;
+      r.match.costoAnterior = r.match.costo;
       r.match.costo = r.costoNeto;
       const ventaVieja = r.match.venta;
       r.match.venta = r.venta;
