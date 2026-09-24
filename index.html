@@ -1221,7 +1221,9 @@ function adjustStock(id, delta){
   if(!p) return;
   const anterior = Number(p.stock)||0;
   p.stock = Math.max(0, anterior + delta);
-  if(p.stock < anterior) registrarVenta(p, anterior - p.stock);
+  const diferencia = p.stock - anterior;
+  if(diferencia < 0) registrarVenta(p, -diferencia);
+  else if(diferencia > 0) deshacerVentaAuto(p.id, diferencia);
   saveProductos();
   render();
 }
@@ -1231,15 +1233,24 @@ function setStock(id, value){
   const anterior = Number(p.stock)||0;
   const v = Math.max(0, Math.round(Number(value)||0));
   p.stock = v;
-  if(v < anterior) registrarVenta(p, anterior - v);
+  const diferencia = v - anterior;
+  if(diferencia < 0) registrarVenta(p, -diferencia);
+  else if(diferencia > 0) deshacerVentaAuto(p.id, diferencia);
   saveProductos();
   render();
 }
 
 /* ================= VENTAS (se registran solas al bajar el stock) ================= */
+// Apunta a la última venta que se generó sola desde la pestaña Stock, para poder
+// deshacerla si justo después se sube el stock de ese mismo producto (botón
+// apretado de más, producto equivocado, etc.). Se pisa con cada baja nueva y se
+// olvida en cuanto se toca otro producto, así que solo deshace la corrección
+// inmediata, no cualquier venta vieja.
+let ultimaVentaAuto = null;
+
 function registrarVenta(producto, cantidad){
   if(!producto || !(cantidad > 0)) return;
-  ventas.push({
+  const venta = {
     id: uid(),
     productId: producto.id,
     nombre: producto.nombre,
@@ -1250,7 +1261,21 @@ function registrarVenta(producto, cantidad){
     costo: Number(producto.costo)||0,
     fecha: today(),
     ts: Date.now(),
-  });
+  };
+  ventas.push(venta);
+  ultimaVentaAuto = { productId: producto.id, ventaId: venta.id };
+  saveVentas();
+}
+function deshacerVentaAuto(productId, cantidadRepuesta){
+  if(!ultimaVentaAuto || ultimaVentaAuto.productId !== productId) return;
+  const venta = ventas.find(v => v.id === ultimaVentaAuto.ventaId);
+  if(!venta){ ultimaVentaAuto = null; return; }
+  if(cantidadRepuesta >= venta.cantidad){
+    ventas = ventas.filter(v => v.id !== venta.id);
+    ultimaVentaAuto = null;
+  }else{
+    venta.cantidad -= cantidadRepuesta;
+  }
   saveVentas();
 }
 function eliminarVenta(id){
