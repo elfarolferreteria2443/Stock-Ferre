@@ -219,6 +219,19 @@
   }
   .empty .big{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-size:22px; color:var(--ink); font-weight:700; margin-bottom:6px; }
 
+  /* Arrastrar y soltar listas de precios */
+  .drop-overlay{
+    position:fixed; inset:0; z-index:200; display:none; align-items:center; justify-content:center;
+    background:rgba(35,38,43,0.55); padding:20px; pointer-events:none;
+  }
+  .drop-overlay.visible{ display:flex; }
+  .drop-overlay .drop-box{
+    background:var(--panel); border:3px dashed var(--accent); border-radius:16px;
+    padding:36px 44px; text-align:center; max-width:520px; box-shadow:0 20px 50px rgba(0,0,0,0.25);
+  }
+  .drop-overlay .drop-box .big{ font-size:22px; font-weight:700; color:var(--ink); margin-bottom:6px; }
+  .drop-overlay .drop-box .small{ color:var(--ink-soft); font-size:14px; }
+
   /* Modal */
   .overlay{
     position:fixed; inset:0; background:rgba(35,38,43,0.5); display:flex; align-items:flex-start;
@@ -389,6 +402,12 @@
 </div>
 
 <div id="modalRoot"></div>
+<div class="drop-overlay" id="dropOverlay">
+  <div class="drop-box">
+    <div class="big">Soltá la lista de precios acá</div>
+    <div class="small" id="dropOverlayHint">Excel, CSV o PDF — podés soltar varios archivos juntos</div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -3345,7 +3364,7 @@ function openImportModal(proveedorId){
   const archivoSeccion = loteActivo
     ? `<div class="global-pct-note" style="margin-bottom:10px;">Archivo ${loteIndex+1} de ${loteArchivos.length}: <b>${esc(loteArchivos[loteIndex] ? loteArchivos[loteIndex].name : '')}</b> (cargado automáticamente)</div>`
     : `<div class="field">
-        <label>Archivo (.xlsx, .xls, .csv o .pdf)</label>
+        <label>Archivo (.xlsx, .xls, .csv o .pdf) — también podés arrastrarlo y soltarlo sobre esta ventana</label>
         <input id="im_file" type="file" accept=".xlsx,.xls,.csv,.pdf" onchange="handleImportFile(this)">
       </div>`;
   modal.innerHTML = `
@@ -3494,7 +3513,10 @@ function aplicarFilasDesdeIA(items){
 }
 
 function abrirImportacionLote(input){
-  const files = Array.from(input.files || []);
+  iniciarLoteConArchivos(Array.from(input.files || []));
+}
+
+function iniciarLoteConArchivos(files){
   if(files.length === 0) return;
   loteActivo = true;
   loteArchivos = files;
@@ -3517,7 +3539,7 @@ function iniciarSiguienteDelLote(){
     return;
   }
   const file = loteArchivos[loteIndex];
-  const nombreArchivo = normTxt(file.name.replace(/\.(xlsx|xls|csv|xlsm)$/i, ''));
+  const nombreArchivo = normTxt(file.name.replace(/\.(xlsx|xls|csv|xlsm|pdf)$/i, ''));
   const sugeridos = proveedores.filter(pr => {
     const n = normTxt(pr.nombre);
     return n && (nombreArchivo.includes(n) || n.includes(nombreArchivo));
@@ -3576,6 +3598,90 @@ function cancelarLote(){
   render();
   showToast('Lote de importación cancelado');
 }
+
+/* ---- Arrastrar y soltar archivos de listas sobre la app ----
+   Si está abierta la ventana "Importar lista" de un proveedor (y no hay un lote en curso),
+   el archivo se carga ahí. Si no hay ninguna ventana abierta, entra por el mismo flujo de
+   "Importar varias listas" (adivina el proveedor por el nombre del archivo o pregunta). */
+const DROP_EXT_OK = /\.(xlsx|xls|xlsm|csv|pdf)$/i;
+let dropDragDepth = 0;
+
+function dragTraeArchivos(e){
+  return !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+}
+
+function appVisible(){
+  const root = document.getElementById('appRoot');
+  return root && root.style.display !== 'none';
+}
+
+function destinoDeDrop(){
+  if(document.getElementById('im_mapping') && !loteActivo) return 'modalImport';
+  if(document.getElementById('modalRoot').innerHTML.trim() === '') return 'lote';
+  return null;
+}
+
+function mostrarDropOverlay(visible){
+  const ov = document.getElementById('dropOverlay');
+  if(!ov) return;
+  if(visible){
+    const destino = destinoDeDrop();
+    document.getElementById('dropOverlayHint').textContent = destino === 'modalImport'
+      ? 'Se va a cargar en esta importación (Excel, CSV o PDF)'
+      : destino === 'lote'
+        ? 'Excel, CSV o PDF — podés soltar varios archivos juntos'
+        : 'Cerrá la ventana abierta para poder importar';
+  }
+  ov.classList.toggle('visible', visible);
+}
+
+document.addEventListener('dragenter', e=>{
+  if(!dragTraeArchivos(e) || !appVisible()) return;
+  e.preventDefault();
+  dropDragDepth++;
+  mostrarDropOverlay(true);
+});
+
+document.addEventListener('dragover', e=>{
+  if(!dragTraeArchivos(e)) return;
+  e.preventDefault(); // sin esto el navegador abre el archivo en vez de dejarnos procesarlo
+  e.dataTransfer.dropEffect = (appVisible() && destinoDeDrop()) ? 'copy' : 'none';
+});
+
+document.addEventListener('dragleave', e=>{
+  if(!dragTraeArchivos(e)) return;
+  dropDragDepth = Math.max(0, dropDragDepth - 1);
+  if(dropDragDepth === 0) mostrarDropOverlay(false);
+});
+
+document.addEventListener('drop', e=>{
+  if(!dragTraeArchivos(e)) return;
+  e.preventDefault();
+  dropDragDepth = 0;
+  mostrarDropOverlay(false);
+  if(!appVisible()) return;
+
+  const todos = Array.from(e.dataTransfer.files || []);
+  const files = todos.filter(f => DROP_EXT_OK.test(f.name || ''));
+  if(files.length === 0){
+    showToast('Solo se pueden importar archivos Excel (.xlsx, .xls), CSV o PDF.');
+    return;
+  }
+  if(files.length < todos.length){
+    showToast(`Se ignoraron ${todos.length - files.length} archivo(s) que no son Excel, CSV o PDF.`);
+  }
+
+  const destino = destinoDeDrop();
+  if(destino === 'modalImport'){
+    if(files.length > 1) showToast('En esta ventana se carga un archivo por vez: se usó ' + files[0].name);
+    cargarArchivoEnContexto(files[0]);
+  }else if(destino === 'lote'){
+    if(proveedores.length === 0){ showToast('Primero agregá un proveedor en la pestaña Proveedores.'); return; }
+    iniciarLoteConArchivos(files);
+  }else{
+    showToast('Cerrá la ventana abierta para poder importar la lista.');
+  }
+});
 
 /* Compara la configuración guardada de un proveedor contra el archivo recién subido */
 function detectarCambios(config, allRows){
