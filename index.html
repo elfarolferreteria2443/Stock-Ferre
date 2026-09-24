@@ -1019,7 +1019,7 @@ function listaStockParaMostrar(){
       presentacion: m.presentacion || (ops[0] ? ops[0].presentacion : ''),
       proveedor: proveedoresOps.length > 1 ? `${proveedoresOps.length} proveedores` : (proveedoresOps[0] || '—'),
       proveedorTitulo: proveedoresOps.join(', '),
-      costo: costoPromedioOpciones(m.id),
+      costo: costoReferenciaMaestro(m.id),
       stock: Number(m.stock)||0,
       stockMin: Number(m.stockMin)||0,
       opciones: ops,
@@ -1184,17 +1184,20 @@ function startColResize(e, key){
 function renderPriceDetailMaestro(m){
   const ops = opcionesDelMaestro(m.id).slice().sort((a,b)=>(Number(a.costo)||0)-(Number(b.costo)||0));
   const venta = Number(m.venta)||0;
+  const masPedida = opcionMasPedidaDe(m.id);
   return `<div class="price-detail">
     <div class="pd-title" title="${esc(m.nombre)}">🔗 ${esc(m.nombre)}</div>
     <div class="pd-price-big">${money(venta)}</div>
-    <div class="meta" style="color:var(--ink-soft); font-size:12px; margin-bottom:8px;">Precio propio, fijado por vos (no depende de un proveedor puntual).</div>
+    <div class="meta" style="color:var(--ink-soft); font-size:12px; margin-bottom:8px;">Precio propio, fijado por vos (no depende de un proveedor puntual). El costo de referencia es el del proveedor al que más veces le pediste este producto${!masPedida?' (todavía sin historial: se usa el promedio)':''}.</div>
     <button class="btn secondary small" style="width:100%;" onclick="toggleDetalle()">${detalleExpandido ? 'Ocultar opciones de proveedor ▴' : 'Ver opciones de proveedor ▾'}</button>
     ${detalleExpandido ? `
     <div class="pd-breakdown">
       ${ops.map(o=>{
         const costo = Number(o.costo)||0;
         const margen = venta>0 ? ((venta-costo)/venta*100) : null;
-        return `<div class="pd-row"><span>${esc(o.proveedor||'—')} <span style="color:var(--ink-soft);">(${esc(o.codigo||'—')})</span></span><span class="mono">${money(costo)}${margen!=null?` · margen ${margen.toFixed(0)}%`:''}</span></div>`;
+        const veces = Number(o.vecesRecibido)||0;
+        const esRef = masPedida && masPedida.id === o.id;
+        return `<div class="pd-row"><span>${esRef?'★ ':''}${esc(o.proveedor||'—')} <span style="color:var(--ink-soft);">(${esc(o.codigo||'—')}${veces>0?` · pedido ${veces} vez(es)`:''})</span></span><span class="mono">${money(costo)}${margen!=null?` · margen ${margen.toFixed(0)}%`:''}</span></div>`;
       }).join('')}
     </div>` : ''}
   </div>`;
@@ -1311,9 +1314,24 @@ function ventaActualDe(producto){
   const m = maestroDe(producto);
   return m ? (Number(m.venta)||0) : (Number(producto.venta)||0);
 }
-function costoPromedioOpciones(maestroId){
+// Costo de referencia de un maestro: el del proveedor al que más veces se le
+// recibió pedido de este producto (probablemente el que se usa en la práctica).
+// Hasta que haya historial de pedidos recibidos (vecesRecibido en 0 para todos
+// los vinculados), usa el promedio simple entre las opciones.
+function opcionMasPedidaDe(maestroId){
+  const ops = opcionesDelMaestro(maestroId);
+  let mejor = null;
+  for(const o of ops){
+    const veces = Number(o.vecesRecibido)||0;
+    if(veces > 0 && (!mejor || veces > (Number(mejor.vecesRecibido)||0))) mejor = o;
+  }
+  return mejor;
+}
+function costoReferenciaMaestro(maestroId){
   const ops = opcionesDelMaestro(maestroId);
   if(ops.length === 0) return 0;
+  const masPedida = opcionMasPedidaDe(maestroId);
+  if(masPedida) return Number(masPedida.costo)||0;
   return ops.reduce((a,p)=>a+(Number(p.costo)||0),0) / ops.length;
 }
 
@@ -1418,7 +1436,7 @@ function registrarVentaMaestro(maestro, cantidad){
     proveedor: proveedorLbl,
     cantidad,
     precioVenta: Number(maestro.venta)||0,
-    costo: costoPromedioOpciones(maestro.id),
+    costo: costoReferenciaMaestro(maestro.id),
     fecha: today(),
     ts: Date.now(),
   };
@@ -1660,10 +1678,15 @@ function openMaestroModal(maestroId){
       </div>
 
       <div class="step-label">Opciones de proveedor (${ops.length})</div>
-      ${ops.map(o=>`<div class="row-actions" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--line);">
-        <span>${esc(o.proveedor||'—')} <span class="meta" style="color:var(--ink-soft); font-size:12px;">cód. ${esc(o.codigo||'—')} · costo ${money(o.costo)}</span></span>
+      ${(()=>{ const masPedida = opcionMasPedidaDe(m.id); return ops.map(o=>{
+        const veces = Number(o.vecesRecibido)||0;
+        const esRef = masPedida && masPedida.id === o.id;
+        return `<div class="row-actions" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--line);">
+        <span>${esRef?'★ ':''}${esc(o.proveedor||'—')} <span class="meta" style="color:var(--ink-soft); font-size:12px;">cód. ${esc(o.codigo||'—')} · costo ${money(o.costo)}${veces>0?` · pedido ${veces} vez(es)`:''}</span></span>
         <button class="icon-btn" title="Quitar de la agrupación" onclick="quitarOpcionDeMaestro('${o.id}')">🗑</button>
-      </div>`).join('')}
+      </div>`;
+      }).join(''); })()}
+      <div class="meta" style="color:var(--ink-soft); font-size:11.5px; margin:6px 0 0 0;">★ = proveedor al que más veces le pediste este producto (se usa su costo para el margen). Sin historial todavía, se usa el promedio.</div>
 
       <div class="step-label">Agregar otra opción de proveedor</div>
       <div class="field"><input id="mae_buscar" type="text" placeholder="Buscar producto suelto por nombre o código..." oninput="renderMaestroBusqueda('${m.id}', this.value)"></div>
@@ -2326,6 +2349,7 @@ function confirmarRecepcion(pedidoId){
     if(recibido > 0){
       const p = productos.find(x=>x.id===it.productId);
       if(p){
+        p.vecesRecibido = (Number(p.vecesRecibido)||0) + 1;
         const m = maestroDe(p);
         if(m){ m.stock = (Number(m.stock)||0) + recibido; tocoAlgunMaestro = true; }
         else p.stock = (Number(p.stock)||0) + recibido;
