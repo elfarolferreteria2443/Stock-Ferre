@@ -346,6 +346,7 @@
     <nav class="tabs" style="flex:1;">
       <button data-tab="stock" class="active">Stock</button>
       <button data-tab="pedidos">Pedidos</button>
+      <button data-tab="ventas">Ventas</button>
       <button data-tab="proveedores">Proveedores</button>
       <button data-tab="metricas">Métricas</button>
       <button data-tab="cuentas">Cuentas corrientes</button>
@@ -368,6 +369,7 @@ let productos = [];
 let pedidos = [];
 let proveedores = [];
 let cuentasMovimientos = [];
+let ventas = [];
 let currentTab = 'stock';
 let searchStock = '';
 let searchPedidos = '';
@@ -383,6 +385,9 @@ let proveedoresExpandidos = new Set();
 let globalPctVisible = false;
 let metricasResumenVisible = false;
 let cuentasResumenVisible = false;
+let ventasResumenVisible = true;
+let ventasFiltroMes = '';
+let ventasFiltroAnio = '';
 let metricasSortBy = 'comprado';
 const PRODUCTO_MAX_WIDTH = 420;
 let colWidths = { pedidoEstado:36, codigo:85, rubro:70, um:55, producto:420, costo:95, proveedor:95, stock:72, acciones:110 };
@@ -495,6 +500,7 @@ async function loadAll(){
   try{ const v = await fbGet('pedidos'); pedidos = Array.isArray(v) ? v : []; }catch(e){ pedidos = []; }
   try{ const v = await fbGet('proveedores'); proveedores = Array.isArray(v) ? v : []; }catch(e){ proveedores = []; }
   try{ const v = await fbGet('cuentasMovimientos'); cuentasMovimientos = Array.isArray(v) ? v : []; }catch(e){ cuentasMovimientos = []; }
+  try{ const v = await fbGet('ventas'); ventas = Array.isArray(v) ? v : []; }catch(e){ ventas = []; }
   try{ const v = await fbGet('colWidths'); if(v) Object.assign(colWidths, v); }catch(e){ /* usa los valores por defecto */ }
   if(colWidths.producto > PRODUCTO_MAX_WIDTH) colWidths.producto = PRODUCTO_MAX_WIDTH;
   try{ const v = await fbGet('globalPct'); if(v){ globalPctTarjeta = Number(v.tarjeta)||0; globalPctIva = Number(v.iva)||0; } }catch(e){ /* usa 0 por defecto */ }
@@ -518,6 +524,10 @@ async function savePedidos(){
 }
 async function saveProveedores(){
   try{ await fbSet('proveedores', proveedores); }
+  catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
+}
+async function saveVentas(){
+  try{ await fbSet('ventas', ventas); }
   catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
 }
 async function saveCuentas(){
@@ -900,6 +910,7 @@ function render(){
     const wrap = document.getElementById('pedidosListWrap');
     if(wrap) wrap.innerHTML = renderPedidosListHtml();
   }
+  else if(currentTab === 'ventas') main.innerHTML = renderVentas();
   else if(currentTab === 'proveedores') main.innerHTML = renderProveedores();
   else if(currentTab === 'metricas') main.innerHTML = renderMetricas();
   else main.innerHTML = renderCuentas();
@@ -1208,17 +1219,152 @@ function focusStockSearch(){
 function adjustStock(id, delta){
   const p = productos.find(x=>x.id===id);
   if(!p) return;
-  p.stock = Math.max(0, (Number(p.stock)||0) + delta);
+  const anterior = Number(p.stock)||0;
+  p.stock = Math.max(0, anterior + delta);
+  if(p.stock < anterior) registrarVenta(p, anterior - p.stock);
   saveProductos();
   render();
 }
 function setStock(id, value){
   const p = productos.find(x=>x.id===id);
   if(!p) return;
+  const anterior = Number(p.stock)||0;
   const v = Math.max(0, Math.round(Number(value)||0));
   p.stock = v;
+  if(v < anterior) registrarVenta(p, anterior - v);
   saveProductos();
   render();
+}
+
+/* ================= VENTAS (se registran solas al bajar el stock) ================= */
+function registrarVenta(producto, cantidad){
+  if(!producto || !(cantidad > 0)) return;
+  ventas.push({
+    id: uid(),
+    productId: producto.id,
+    nombre: producto.nombre,
+    codigo: producto.codigo || '',
+    proveedor: producto.proveedor || '',
+    cantidad,
+    precioVenta: Number(producto.venta)||0,
+    costo: Number(producto.costo)||0,
+    fecha: today(),
+    ts: Date.now(),
+  });
+  saveVentas();
+}
+function eliminarVenta(id){
+  if(!confirm('¿Eliminar este registro de venta? Usalo si esa baja de stock no fue realmente una venta (por ejemplo, una corrección de inventario).')) return;
+  ventas = ventas.filter(v=>v.id!==id);
+  saveVentas();
+  render();
+  showToast('Registro de venta eliminado');
+}
+function toggleVentasResumen(){
+  ventasResumenVisible = !ventasResumenVisible;
+  render();
+}
+function sumarDias(fechaISO, delta){
+  const d = new Date(fechaISO + 'T00:00:00');
+  d.setDate(d.getDate() + delta);
+  return d.toISOString().slice(0,10);
+}
+function resumenVentasRango(desde, hasta){
+  let unidades = 0, vendido = 0, costo = 0;
+  for(const v of ventas){
+    if(v.fecha < desde || v.fecha > hasta) continue;
+    unidades += Number(v.cantidad)||0;
+    vendido += (Number(v.precioVenta)||0) * (Number(v.cantidad)||0);
+    costo += (Number(v.costo)||0) * (Number(v.cantidad)||0);
+  }
+  return { unidades, vendido, ganancia: vendido - costo };
+}
+function resumenVentasMes(mesKey){
+  let unidades = 0, vendido = 0, costo = 0;
+  for(const v of ventas){
+    if(mesKeyDe(v.fecha) !== mesKey) continue;
+    unidades += Number(v.cantidad)||0;
+    vendido += (Number(v.precioVenta)||0) * (Number(v.cantidad)||0);
+    costo += (Number(v.costo)||0) * (Number(v.cantidad)||0);
+  }
+  return { unidades, vendido, ganancia: vendido - costo };
+}
+function renderVentas(){
+  const hoy = today();
+  const ayer = sumarDias(hoy, -1);
+  const rHoy = resumenVentasRango(hoy, hoy);
+  const rAyer = resumenVentasRango(ayer, ayer);
+
+  const semDesde = sumarDias(hoy, -6);
+  const rSemana = resumenVentasRango(semDesde, hoy);
+  const semAntDesde = sumarDias(hoy, -13);
+  const semAntHasta = sumarDias(hoy, -7);
+  const rSemanaAnt = resumenVentasRango(semAntDesde, semAntHasta);
+
+  const keyActual = mesKeyDe(hoy);
+  const keyAnterior = mesAnteriorKey(keyActual);
+  const rMes = resumenVentasMes(keyActual);
+  const rMesAnt = resumenVentasMes(keyAnterior);
+
+  let html = `
+  <div class="dash-toggle" onclick="toggleVentasResumen()">${ventasResumenVisible ? '▾' : '▸'} Resumen de ventas</div>
+  ${ventasResumenVisible ? `
+  <div class="dash">
+    <div class="card"><div class="num mono">${money(rHoy.vendido)}${flechaComparativa(rHoy.vendido, rAyer.vendido, false)}</div><div class="lbl">Vendido hoy (${rHoy.unidades} u.)</div></div>
+    <div class="card"><div class="num mono">${money(rHoy.ganancia)}</div><div class="lbl">Ganancia hoy</div></div>
+    <div class="card"><div class="num mono">${money(rSemana.vendido)}${flechaComparativa(rSemana.vendido, rSemanaAnt.vendido, false)}</div><div class="lbl">Vendido últimos 7 días (${rSemana.unidades} u.)</div></div>
+    <div class="card"><div class="num mono">${money(rSemana.ganancia)}</div><div class="lbl">Ganancia últimos 7 días</div></div>
+    <div class="card"><div class="num mono">${money(rMes.vendido)}${flechaComparativa(rMes.vendido, rMesAnt.vendido, false)}</div><div class="lbl">Vendido en ${nombreMes(keyActual)} (${rMes.unidades} u.)</div></div>
+    <div class="card"><div class="num mono">${money(rMes.ganancia)}</div><div class="lbl">Ganancia en ${nombreMes(keyActual)}</div></div>
+  </div>` : ''}`;
+
+  if(ventas.length === 0){
+    html += `<div class="empty"><div class="big">Todavía no hay ventas registradas</div>
+      <div>Se registran solas cada vez que bajás el stock de un producto en la pestaña Stock.</div></div>`;
+    return html;
+  }
+
+  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const aniosSet = new Set(ventas.map(v => v.fecha.slice(0,4)));
+  aniosSet.add(hoy.slice(0,4));
+  const anios = [...aniosSet].sort((a,b)=> b.localeCompare(a));
+
+  html += `<div class="toolbar">
+    <div class="spacer"></div>
+    <select onchange="ventasFiltroMes=this.value; render()">
+      <option value="">Todos los meses</option>
+      ${meses.map((m,i)=>`<option value="${String(i+1).padStart(2,'0')}" ${ventasFiltroMes===String(i+1).padStart(2,'0')?'selected':''}>${m}</option>`).join('')}
+    </select>
+    <select onchange="ventasFiltroAnio=this.value; render()">
+      <option value="">Todos los años</option>
+      ${anios.map(a=>`<option value="${a}" ${ventasFiltroAnio===a?'selected':''}>${a}</option>`).join('')}
+    </select>
+  </div>`;
+
+  const filtradas = ventas
+    .filter(v => (!ventasFiltroMes || v.fecha.slice(5,7) === ventasFiltroMes) && (!ventasFiltroAnio || v.fecha.slice(0,4) === ventasFiltroAnio))
+    .sort((a,b)=> b.fecha.localeCompare(a.fecha) || (b.ts||0)-(a.ts||0));
+
+  if(filtradas.length === 0){
+    html += `<div class="empty"><div class="big">No hay ventas para lo que estás filtrando.</div></div>`;
+    return html;
+  }
+
+  html += `<div class="preview-wrap"><table><thead><tr>
+    <th>Fecha</th><th>Producto</th><th>Proveedor</th><th>Cantidad</th><th>Precio unit.</th><th>Subtotal</th><th></th>
+  </tr></thead><tbody>
+    ${filtradas.map(v => `<tr>
+      <td>${v.fecha}</td>
+      <td>${esc(v.nombre)}</td>
+      <td>${esc(v.proveedor||'—')}</td>
+      <td>${v.cantidad}</td>
+      <td class="price">${money(v.precioVenta)}</td>
+      <td class="price">${money((Number(v.precioVenta)||0)*(Number(v.cantidad)||0))}</td>
+      <td><button class="icon-btn" title="Eliminar (no fue una venta real)" onclick="eliminarVenta('${v.id}')">🗑</button></td>
+    </tr>`).join('')}
+  </tbody></table></div>`;
+
+  return html;
 }
 function deleteProducto(id){
   const p = productos.find(x=>x.id===id);
@@ -1362,8 +1508,10 @@ function saveProducto(id){
   if(id){
     const p = productos.find(x=>x.id===id);
     const ventaVieja = p.venta;
+    const stockViejo = Number(p.stock)||0;
     Object.assign(p, data);
     p.ventaAnterior = ventaVieja;
+    if(data.stock < stockViejo) registrarVenta(p, stockViejo - data.stock);
   }else{
     productos.push({ id: uid(), ...data });
     currentTab = 'stock';
