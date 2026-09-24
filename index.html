@@ -179,9 +179,18 @@
   .badge.sent{ background:#e8eef5; color:var(--accent2); }
   .stock-adjust{ display:flex; align-items:center; gap:3px; flex-wrap:nowrap; }
   .stock-adjust input{
-    width:38px; text-align:center; padding:5px 2px; border:1px solid var(--line); border-radius:6px;
+    width:34px; text-align:center; padding:5px 2px; border:1px solid var(--line); border-radius:6px;
     font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; font-weight:600; font-size:12px;
   }
+  .stock-adjust input::-webkit-inner-spin-button, .stock-adjust input::-webkit-outer-spin-button{ -webkit-appearance:none; margin:0; }
+  .stock-adjust input{ -moz-appearance:textfield; }
+  .qty-btn{
+    width:26px; height:26px; flex-shrink:0; border-radius:7px; border:1px solid var(--line); background:#fff;
+    cursor:pointer; font-size:16px; font-weight:700; line-height:1; display:inline-flex; align-items:center; justify-content:center;
+    color:var(--ink-soft); touch-action:manipulation;
+  }
+  .qty-btn:hover{ background:var(--accent); border-color:var(--accent); color:#fff; }
+  .qty-btn:active{ filter:brightness(0.95); }
   .price{ font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; font-weight:600; }
   .row-actions{ display:flex; gap:6px; justify-content:flex-end; flex-wrap:nowrap; }
 
@@ -390,7 +399,7 @@ let ventasFiltroMes = '';
 let ventasFiltroAnio = '';
 let metricasSortBy = 'comprado';
 const PRODUCTO_MAX_WIDTH = 420;
-let colWidths = { pedidoEstado:36, codigo:85, rubro:70, um:55, producto:420, costo:95, proveedor:95, stock:72, acciones:110 };
+let colWidths = { pedidoEstado:36, codigo:85, rubro:70, um:55, producto:420, costo:95, proveedor:95, stock:128, acciones:110 };
 let globalPctTarjeta = 0;
 let globalPctIva = 0;
 let configStockBajoDefault = 0;
@@ -1086,7 +1095,9 @@ function renderStock(){
         <td data-label="Costo" class="price cell-trunc">${money(p.costo)}</td>
         <td data-label="Stock">
           <div class="stock-adjust" onclick="event.stopPropagation()">
+            <button type="button" class="qty-btn" title="Restar 1" onclick="adjustStock('${p.id}', -1)">−</button>
             <input type="number" value="${Number(p.stock)||0}" onchange="setStock('${p.id}', this.value)">
+            <button type="button" class="qty-btn" title="Sumar 1" onclick="adjustStock('${p.id}', 1)">+</button>
             ${bajo ? `<span title="Stock bajo" style="color:#d4a017; font-size:15px; font-weight:800;">▼</span>` : ''}
           </div>
         </td>
