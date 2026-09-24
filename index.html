@@ -379,6 +379,7 @@ let pedidos = [];
 let proveedores = [];
 let cuentasMovimientos = [];
 let ventas = [];
+let maestros = [];
 let currentTab = 'stock';
 let searchStock = '';
 let searchPedidos = '';
@@ -399,7 +400,7 @@ let ventasFiltroMes = '';
 let ventasFiltroAnio = '';
 let metricasSortBy = 'comprado';
 const PRODUCTO_MAX_WIDTH = 420;
-let colWidths = { pedidoEstado:36, codigo:85, rubro:70, um:55, producto:420, costo:95, proveedor:95, stock:128, acciones:110 };
+let colWidths = { pedidoEstado:36, codigo:85, rubro:70, um:55, producto:420, costo:95, proveedor:95, stock:128, acciones:150 };
 let globalPctTarjeta = 0;
 let globalPctIva = 0;
 let configStockBajoDefault = 0;
@@ -510,6 +511,7 @@ async function loadAll(){
   try{ const v = await fbGet('proveedores'); proveedores = Array.isArray(v) ? v : []; }catch(e){ proveedores = []; }
   try{ const v = await fbGet('cuentasMovimientos'); cuentasMovimientos = Array.isArray(v) ? v : []; }catch(e){ cuentasMovimientos = []; }
   try{ const v = await fbGet('ventas'); ventas = Array.isArray(v) ? v : []; }catch(e){ ventas = []; }
+  try{ const v = await fbGet('maestros'); maestros = Array.isArray(v) ? v : []; }catch(e){ maestros = []; }
   try{ const v = await fbGet('colWidths'); if(v) Object.assign(colWidths, v); }catch(e){ /* usa los valores por defecto */ }
   if(colWidths.producto > PRODUCTO_MAX_WIDTH) colWidths.producto = PRODUCTO_MAX_WIDTH;
   try{ const v = await fbGet('globalPct'); if(v){ globalPctTarjeta = Number(v.tarjeta)||0; globalPctIva = Number(v.iva)||0; } }catch(e){ /* usa 0 por defecto */ }
@@ -537,6 +539,10 @@ async function saveProveedores(){
 }
 async function saveVentas(){
   try{ await fbSet('ventas', ventas); }
+  catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
+}
+async function saveMaestros(){
+  try{ await fbSet('maestros', maestros); }
   catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
 }
 async function saveCuentas(){
@@ -931,7 +937,8 @@ function render(){
 
 /* ================= STOCK ================= */
 function getPedidoIndicator(productId){
-  const relevantes = pedidos.filter(ped => ped.estado === 'pendiente' && ped.items.some(it => it.productId === productId));
+  const ids = Array.isArray(productId) ? productId : [productId];
+  const relevantes = pedidos.filter(ped => ped.estado === 'pendiente' && ped.items.some(it => ids.includes(it.productId)));
   if(relevantes.length === 0) return null;
   const rank = { amarillo: 3, naranja: 2, rojo: 1 };
   let mejor = null;
@@ -997,14 +1004,40 @@ function flechaOrden(col){
   return stockSortDir === 'asc' ? ' ▲' : ' ▼';
 }
 
+function listaStockParaMostrar(){
+  const sueltos = productos.filter(p => !p.maestroId);
+  const idsConMaestro = new Set(productos.filter(p=>p.maestroId).map(p=>p.maestroId));
+  const filasMaestro = maestros.filter(m => idsConMaestro.has(m.id)).map(m=>{
+    const ops = opcionesDelMaestro(m.id);
+    const proveedoresOps = [...new Set(ops.map(o=>o.proveedor).filter(Boolean))];
+    return {
+      id: m.id,
+      esMaestro: true,
+      nombre: m.nombre,
+      codigo: m.codigo || '',
+      categoria: m.categoria || (ops[0] ? ops[0].categoria : ''),
+      presentacion: m.presentacion || (ops[0] ? ops[0].presentacion : ''),
+      proveedor: proveedoresOps.length > 1 ? `${proveedoresOps.length} proveedores` : (proveedoresOps[0] || '—'),
+      proveedorTitulo: proveedoresOps.join(', '),
+      costo: costoPromedioOpciones(m.id),
+      stock: Number(m.stock)||0,
+      stockMin: Number(m.stockMin)||0,
+      opciones: ops,
+    };
+  });
+  return [...sueltos, ...filasMaestro];
+}
+
 function renderStock(){
   const cats = categorias();
   const hasQuery = searchStock.trim() !== '' || filterCat !== '';
+  const listaCompleta = listaStockParaMostrar();
   let list = [];
   if(hasQuery){
     const tokens = searchStock.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    list = productos.filter(p=>{
-      const haystack = `${p.nombre} ${p.codigo||''} ${p.categoria||''} ${p.proveedor||''}`.toLowerCase();
+    list = listaCompleta.filter(p=>{
+      const extra = p.esMaestro ? p.opciones.map(o=>`${o.nombre} ${o.codigo||''} ${o.proveedor||''}`).join(' ') : '';
+      const haystack = `${p.nombre} ${p.codigo||''} ${p.categoria||''} ${p.proveedor||''} ${extra}`.toLowerCase();
       const matchS = tokens.length === 0 || tokens.every(t => haystack.includes(t));
       const matchC = !filterCat || p.categoria === filterCat;
       return matchS && matchC;
@@ -1016,14 +1049,14 @@ function renderStock(){
     }
   }
 
-  const valorInventario = productos.reduce((acc,p)=> acc + (Number(p.stock)||0) * (Number(p.costo)||0), 0);
-  const bajoCount = productos.filter(p => Number(p.stock) <= Number(p.stockMin||0)).length;
+  const valorInventario = listaCompleta.reduce((acc,p)=> acc + (Number(p.stock)||0) * (Number(p.costo)||0), 0);
+  const bajoCount = listaCompleta.filter(p => Number(p.stock) <= Number(p.stockMin||0)).length;
 
   let html = `
   <div class="dash-toggle" onclick="toggleDash()">${dashExpandido ? '▾' : '▸'} Resumen de stock</div>`;
   if(dashExpandido){
     html += `<div class="dash">
-      <div class="card"><div class="num">${productos.length}</div><div class="lbl">Productos</div></div>
+      <div class="card"><div class="num">${listaCompleta.length}</div><div class="lbl">Productos</div></div>
       <div class="card warn"><div class="num">${bajoCount}</div><div class="lbl">Stock bajo</div></div>
       <div class="card"><div class="num mono">${money(valorInventario)}</div><div class="lbl">Valor inventario (costo)</div></div>
     </div>`;
@@ -1079,33 +1112,40 @@ function renderStock(){
     for(const p of list){
       const bajo = Number(p.stock) <= Number(p.stockMin||0);
       const sel = p.id === selectedProductId;
+      const idsIndicador = p.esMaestro ? p.opciones.map(o=>o.id) : [p.id];
       html += `<tr data-id="${p.id}" onclick="selectProducto('${p.id}')" style="cursor:pointer; ${sel?'background:#faf0e8;':''}">
         <td data-label="" style="text-align:center;">${(()=>{
-          const ind = getPedidoIndicator(p.id);
+          const ind = getPedidoIndicator(idsIndicador);
           if(!ind) return '';
           const colores = { rojo:'#c0392b', naranja:'#e07b1f', amarillo:'#d4a017' };
           const titulos = { rojo:'Anotado como faltante, todavía no se le envió el pedido al proveedor', naranja:'Pedido ya enviado al proveedor, esperando que llegue', amarillo:'El pedido llegó pero este producto faltó' };
           return `<span title="${titulos[ind]}" style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${colores[ind]};"></span>`;
         })()}</td>
-        <td data-label="Proveedor" class="cell-trunc">${p.proveedor?esc(p.proveedor):'—'}</td>
+        <td data-label="Proveedor" class="cell-trunc" title="${esc(p.proveedorTitulo||p.proveedor||'')}">${p.proveedor?esc(p.proveedor):'—'}</td>
         <td data-label="Código" class="mono cell-trunc">${p.codigo?esc(p.codigo):'—'}</td>
         <td data-label="Rubro" class="cell-trunc">${p.categoria?esc(p.categoria):'—'}</td>
         <td data-label="UM" class="cell-trunc">${p.presentacion?esc(p.presentacion):'UN'}</td>
-        <td data-label="Producto" class="cell-trunc" title="${esc(p.nombre)}">${esc(p.nombre)}</td>
+        <td data-label="Producto" class="cell-trunc" title="${esc(p.nombre)}">${p.esMaestro ? `<span title="Agrupa ${p.opciones.length} opción(es) de proveedor" style="margin-right:3px;">🔗</span>` : ''}${esc(p.nombre)}</td>
         <td data-label="Costo" class="price cell-trunc">${money(p.costo)}</td>
         <td data-label="Stock">
           <div class="stock-adjust" onclick="event.stopPropagation()">
-            <button type="button" class="qty-btn" title="Restar 1" onclick="adjustStock('${p.id}', -1)">−</button>
-            <input type="number" value="${Number(p.stock)||0}" onchange="setStock('${p.id}', this.value)">
-            <button type="button" class="qty-btn" title="Sumar 1" onclick="adjustStock('${p.id}', 1)">+</button>
+            <button type="button" class="qty-btn" title="Restar 1" onclick="${p.esMaestro?`adjustStockMaestro('${p.id}', -1)`:`adjustStock('${p.id}', -1)`}">−</button>
+            <input type="number" value="${Number(p.stock)||0}" onchange="${p.esMaestro?`setStockMaestro('${p.id}', this.value)`:`setStock('${p.id}', this.value)`}">
+            <button type="button" class="qty-btn" title="Sumar 1" onclick="${p.esMaestro?`adjustStockMaestro('${p.id}', 1)`:`adjustStock('${p.id}', 1)`}">+</button>
             ${bajo ? `<span title="Stock bajo" style="color:#d4a017; font-size:15px; font-weight:800;">▼</span>` : ''}
           </div>
         </td>
         <td data-label="">
           <div class="row-actions" onclick="event.stopPropagation()">
+            ${p.esMaestro ? `
+            <button class="icon-btn" title="Editar agrupación" onclick="openMaestroModal('${p.id}')">✎</button>
+            <button class="icon-btn" title="Registrar faltante" onclick="openFaltantePicker('${p.id}')">🛒</button>
+            ` : `
             <button class="icon-btn" title="Editar" onclick="openProductoModal('${p.id}')">✎</button>
+            <button class="icon-btn" title="Vincular a un maestro" onclick="openVincularModal('${p.id}')">🔗</button>
             <button class="icon-btn" title="Registrar faltante" onclick="openFaltanteModal('${p.id}')">🛒</button>
             <button class="icon-btn" title="Eliminar" onclick="deleteProducto('${p.id}')">🗑</button>
+            `}
           </div>
         </td>
       </tr>`;
@@ -1141,9 +1181,30 @@ function startColResize(e, key){
   document.addEventListener('mouseup', onUp);
 }
 
+function renderPriceDetailMaestro(m){
+  const ops = opcionesDelMaestro(m.id).slice().sort((a,b)=>(Number(a.costo)||0)-(Number(b.costo)||0));
+  const venta = Number(m.venta)||0;
+  return `<div class="price-detail">
+    <div class="pd-title" title="${esc(m.nombre)}">🔗 ${esc(m.nombre)}</div>
+    <div class="pd-price-big">${money(venta)}</div>
+    <div class="meta" style="color:var(--ink-soft); font-size:12px; margin-bottom:8px;">Precio propio, fijado por vos (no depende de un proveedor puntual).</div>
+    <button class="btn secondary small" style="width:100%;" onclick="toggleDetalle()">${detalleExpandido ? 'Ocultar opciones de proveedor ▴' : 'Ver opciones de proveedor ▾'}</button>
+    ${detalleExpandido ? `
+    <div class="pd-breakdown">
+      ${ops.map(o=>{
+        const costo = Number(o.costo)||0;
+        const margen = venta>0 ? ((venta-costo)/venta*100) : null;
+        return `<div class="pd-row"><span>${esc(o.proveedor||'—')} <span style="color:var(--ink-soft);">(${esc(o.codigo||'—')})</span></span><span class="mono">${money(costo)}${margen!=null?` · margen ${margen.toFixed(0)}%`:''}</span></div>`;
+      }).join('')}
+    </div>` : ''}
+  </div>`;
+}
+
 function renderPriceDetail(){
   const p = productos.find(x=>x.id===selectedProductId);
   if(!p){
+    const m = maestros.find(x=>x.id===selectedProductId);
+    if(m) return renderPriceDetailMaestro(m);
     return `<div class="price-detail"><div class="pd-title">Precio</div>
       <div class="pd-empty">Tocá un producto de la lista para ver su precio.</div></div>`;
   }
@@ -1227,9 +1288,39 @@ function focusStockSearch(){
   if(el){ el.focus(); const len = el.value.length; el.setSelectionRange(len, len); }
 }
 
+/* ================= MAESTRO DE STOCK ================= */
+// Un producto puede estar vinculado a un "maestro": un ítem propio que agrupa la
+// misma mercadería ofrecida por varios proveedores. Vinculado, el stock/precio de
+// venta reales pasan a vivir en el maestro (uno solo, compartido); el producto en
+// sí conserva su costo/código/proveedor como una "opción" de compra más.
+function maestroDe(producto){
+  return producto && producto.maestroId ? maestros.find(m=>m.id===producto.maestroId) : null;
+}
+function opcionesDelMaestro(maestroId){
+  return productos.filter(p=>p.maestroId===maestroId);
+}
+function stockActualDe(producto){
+  const m = maestroDe(producto);
+  return m ? (Number(m.stock)||0) : (Number(producto.stock)||0);
+}
+function stockMinActualDe(producto){
+  const m = maestroDe(producto);
+  return m ? (Number(m.stockMin)||0) : (Number(producto.stockMin)||0);
+}
+function ventaActualDe(producto){
+  const m = maestroDe(producto);
+  return m ? (Number(m.venta)||0) : (Number(producto.venta)||0);
+}
+function costoPromedioOpciones(maestroId){
+  const ops = opcionesDelMaestro(maestroId);
+  if(ops.length === 0) return 0;
+  return ops.reduce((a,p)=>a+(Number(p.costo)||0),0) / ops.length;
+}
+
 function adjustStock(id, delta){
   const p = productos.find(x=>x.id===id);
   if(!p) return;
+  if(p.maestroId){ adjustStockMaestro(p.maestroId, delta); return; }
   const anterior = Number(p.stock)||0;
   p.stock = Math.max(0, anterior + delta);
   const diferencia = p.stock - anterior;
@@ -1241,6 +1332,7 @@ function adjustStock(id, delta){
 function setStock(id, value){
   const p = productos.find(x=>x.id===id);
   if(!p) return;
+  if(p.maestroId){ setStockMaestro(p.maestroId, value); return; }
   const anterior = Number(p.stock)||0;
   const v = Math.max(0, Math.round(Number(value)||0));
   p.stock = v;
@@ -1250,13 +1342,36 @@ function setStock(id, value){
   saveProductos();
   render();
 }
+function adjustStockMaestro(maestroId, delta){
+  const m = maestros.find(x=>x.id===maestroId);
+  if(!m) return;
+  const anterior = Number(m.stock)||0;
+  m.stock = Math.max(0, anterior + delta);
+  const diferencia = m.stock - anterior;
+  if(diferencia < 0) registrarVentaMaestro(m, -diferencia);
+  else if(diferencia > 0) deshacerVentaAutoMaestro(m.id, diferencia);
+  saveMaestros();
+  render();
+}
+function setStockMaestro(maestroId, value){
+  const m = maestros.find(x=>x.id===maestroId);
+  if(!m) return;
+  const anterior = Number(m.stock)||0;
+  const v = Math.max(0, Math.round(Number(value)||0));
+  m.stock = v;
+  const diferencia = v - anterior;
+  if(diferencia < 0) registrarVentaMaestro(m, -diferencia);
+  else if(diferencia > 0) deshacerVentaAutoMaestro(m.id, diferencia);
+  saveMaestros();
+  render();
+}
 
 /* ================= VENTAS (se registran solas al bajar el stock) ================= */
 // Apunta a la última venta que se generó sola desde la pestaña Stock, para poder
 // deshacerla si justo después se sube el stock de ese mismo producto (botón
 // apretado de más, producto equivocado, etc.). Se pisa con cada baja nueva y se
-// olvida en cuanto se toca otro producto, así que solo deshace la corrección
-// inmediata, no cualquier venta vieja.
+// olvida en cuanto se toca otro producto/maestro, así que solo deshace la
+// corrección inmediata, no cualquier venta vieja.
 let ultimaVentaAuto = null;
 
 function registrarVenta(producto, cantidad){
@@ -1264,6 +1379,7 @@ function registrarVenta(producto, cantidad){
   const venta = {
     id: uid(),
     productId: producto.id,
+    maestroId: null,
     nombre: producto.nombre,
     codigo: producto.codigo || '',
     proveedor: producto.proveedor || '',
@@ -1274,11 +1390,44 @@ function registrarVenta(producto, cantidad){
     ts: Date.now(),
   };
   ventas.push(venta);
-  ultimaVentaAuto = { productId: producto.id, ventaId: venta.id };
+  ultimaVentaAuto = { productId: producto.id, maestroId: null, ventaId: venta.id };
   saveVentas();
 }
 function deshacerVentaAuto(productId, cantidadRepuesta){
   if(!ultimaVentaAuto || ultimaVentaAuto.productId !== productId) return;
+  const venta = ventas.find(v => v.id === ultimaVentaAuto.ventaId);
+  if(!venta){ ultimaVentaAuto = null; return; }
+  if(cantidadRepuesta >= venta.cantidad){
+    ventas = ventas.filter(v => v.id !== venta.id);
+    ultimaVentaAuto = null;
+  }else{
+    venta.cantidad -= cantidadRepuesta;
+  }
+  saveVentas();
+}
+function registrarVentaMaestro(maestro, cantidad){
+  if(!maestro || !(cantidad > 0)) return;
+  const ops = opcionesDelMaestro(maestro.id);
+  const proveedorLbl = [...new Set(ops.map(p=>p.proveedor).filter(Boolean))].join(' / ');
+  const venta = {
+    id: uid(),
+    productId: null,
+    maestroId: maestro.id,
+    nombre: maestro.nombre,
+    codigo: maestro.codigo || '',
+    proveedor: proveedorLbl,
+    cantidad,
+    precioVenta: Number(maestro.venta)||0,
+    costo: costoPromedioOpciones(maestro.id),
+    fecha: today(),
+    ts: Date.now(),
+  };
+  ventas.push(venta);
+  ultimaVentaAuto = { productId: null, maestroId: maestro.id, ventaId: venta.id };
+  saveVentas();
+}
+function deshacerVentaAutoMaestro(maestroId, cantidadRepuesta){
+  if(!ultimaVentaAuto || ultimaVentaAuto.maestroId !== maestroId) return;
   const venta = ventas.find(v => v.id === ultimaVentaAuto.ventaId);
   if(!venta){ ultimaVentaAuto = null; return; }
   if(cantidadRepuesta >= venta.cantidad){
@@ -1405,6 +1554,7 @@ function renderVentas(){
 function deleteProducto(id){
   const p = productos.find(x=>x.id===id);
   if(!p) return;
+  if(p.maestroId){ showToast('Primero quitalo de la agrupación (desde el ítem maestro) para poder eliminarlo.'); return; }
   if(!confirm(`¿Eliminar "${p.nombre}" del stock? Esta acción no se puede deshacer.`)) return;
   productos = productos.filter(x=>x.id!==id);
   if(selectedProductId === id) selectedProductId = null;
@@ -1413,10 +1563,218 @@ function deleteProducto(id){
   showToast('Producto eliminado');
 }
 
+/* ================= MAESTRO DE STOCK: modales ================= */
+function openVincularModal(productoId){
+  const p = productos.find(x=>x.id===productoId);
+  if(!p) return;
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Vincular a un maestro</h3>
+      <div class="subtitle">${esc(p.nombre)} — ${esc(p.proveedor||'sin proveedor')}</div>
+
+      <div class="step-label">Crear una agrupación nueva</div>
+      <div class="field"><label>Nombre del producto (el que vas a usar vos)</label><input id="vinc_nombre" type="text" value="${esc(p.nombre)}"></div>
+      <div class="field-row">
+        <div class="field"><label>Código interno (opcional)</label><input id="vinc_codigo" type="text" placeholder="Tu código"></div>
+        <div class="field"><label>Precio de venta</label><input id="vinc_venta" type="number" min="0" step="0.01" value="${Number(p.venta)||0}"></div>
+      </div>
+      <div class="field"><label>Stock mínimo</label><input id="vinc_stockmin" type="number" min="0" value="${Number(p.stockMin)||0}"></div>
+      <button class="btn small" style="width:100%;" onclick="crearMaestroDesde('${p.id}')">Crear agrupación con este producto</button>
+
+      ${maestros.length ? `
+      <div class="step-label">...o agregar a una agrupación que ya existe</div>
+      <div class="field">
+        <select id="vinc_existente">
+          <option value="">Elegí una agrupación</option>
+          ${maestros.map(m=>`<option value="${m.id}">${esc(m.nombre)}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn secondary small" style="width:100%;" onclick="agregarAMaestroExistente('${p.id}')">Agregar a la agrupación elegida</button>
+      ` : ''}
+
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button></div>
+    </div>
+  </div>`;
+}
+function crearMaestroDesde(productoId){
+  const p = productos.find(x=>x.id===productoId);
+  if(!p) return;
+  const nombre = document.getElementById('vinc_nombre').value.trim();
+  if(!nombre){ showToast('Poné un nombre'); return; }
+  const codigo = document.getElementById('vinc_codigo').value.trim();
+  const venta = Math.max(0, Number(document.getElementById('vinc_venta').value)||0);
+  const stockMin = Math.max(0, Math.round(Number(document.getElementById('vinc_stockmin').value)||0));
+  const maestro = {
+    id: uid(), nombre, codigo, venta, stockMin,
+    stock: Number(p.stock)||0,
+    categoria: p.categoria || '',
+    presentacion: p.presentacion || '',
+  };
+  maestros.push(maestro);
+  p.maestroId = maestro.id;
+  p.stock = 0;
+  saveMaestros();
+  saveProductos();
+  closeModal();
+  render();
+  showToast('Agrupación creada');
+}
+function agregarAMaestroExistente(productoId){
+  const p = productos.find(x=>x.id===productoId);
+  if(!p) return;
+  const sel = document.getElementById('vinc_existente');
+  const maestroId = sel ? sel.value : '';
+  if(!maestroId){ showToast('Elegí una agrupación'); return; }
+  const m = maestros.find(x=>x.id===maestroId);
+  if(!m) return;
+  m.stock = (Number(m.stock)||0) + (Number(p.stock)||0);
+  p.maestroId = m.id;
+  p.stock = 0;
+  saveMaestros();
+  saveProductos();
+  closeModal();
+  render();
+  showToast(`Agregado a "${m.nombre}"`);
+}
+
+function openMaestroModal(maestroId){
+  const m = maestros.find(x=>x.id===maestroId);
+  if(!m) return;
+  const ops = opcionesDelMaestro(m.id);
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Editar agrupación</h3>
+      <div class="field"><label>Nombre</label><input id="mae_nombre" type="text" value="${esc(m.nombre)}"></div>
+      <div class="field-row">
+        <div class="field"><label>Código interno</label><input id="mae_codigo" type="text" value="${esc(m.codigo||'')}"></div>
+        <div class="field"><label>Precio de venta</label><input id="mae_venta" type="number" min="0" step="0.01" value="${Number(m.venta)||0}"></div>
+      </div>
+      <div class="field"><label>Stock mínimo</label><input id="mae_stockmin" type="number" min="0" value="${Number(m.stockMin)||0}"></div>
+      <div class="modal-actions" style="justify-content:space-between;">
+        <button class="btn secondary" onclick="closeModal()">Cerrar</button>
+        <button class="btn" onclick="guardarMaestro('${m.id}')">Guardar</button>
+      </div>
+
+      <div class="step-label">Opciones de proveedor (${ops.length})</div>
+      ${ops.map(o=>`<div class="row-actions" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--line);">
+        <span>${esc(o.proveedor||'—')} <span class="meta" style="color:var(--ink-soft); font-size:12px;">cód. ${esc(o.codigo||'—')} · costo ${money(o.costo)}</span></span>
+        <button class="icon-btn" title="Quitar de la agrupación" onclick="quitarOpcionDeMaestro('${o.id}')">🗑</button>
+      </div>`).join('')}
+
+      <div class="step-label">Agregar otra opción de proveedor</div>
+      <div class="field"><input id="mae_buscar" type="text" placeholder="Buscar producto suelto por nombre o código..." oninput="renderMaestroBusqueda('${m.id}', this.value)"></div>
+      <div id="mae_busqueda_resultados"></div>
+
+      <div class="modal-actions" style="margin-top:16px;">
+        <button class="btn secondary small" style="color:var(--danger); border-color:var(--danger);" onclick="disolverMaestro('${m.id}')">Disolver agrupación</button>
+      </div>
+    </div>
+  </div>`;
+}
+function guardarMaestro(maestroId){
+  const m = maestros.find(x=>x.id===maestroId);
+  if(!m) return;
+  const nombre = document.getElementById('mae_nombre').value.trim();
+  if(!nombre){ showToast('Poné un nombre'); return; }
+  m.nombre = nombre;
+  m.codigo = document.getElementById('mae_codigo').value.trim();
+  m.venta = Math.max(0, Number(document.getElementById('mae_venta').value)||0);
+  m.stockMin = Math.max(0, Math.round(Number(document.getElementById('mae_stockmin').value)||0));
+  saveMaestros();
+  closeModal();
+  render();
+  showToast('Agrupación guardada');
+}
+function renderMaestroBusqueda(maestroId, texto){
+  const box = document.getElementById('mae_busqueda_resultados');
+  if(!box) return;
+  const q = texto.trim().toLowerCase();
+  if(!q){ box.innerHTML = ''; return; }
+  const candidatos = productos.filter(p => !p.maestroId && `${p.nombre} ${p.codigo||''} ${p.proveedor||''}`.toLowerCase().includes(q)).slice(0, 8);
+  if(candidatos.length === 0){ box.innerHTML = `<div class="meta" style="color:var(--ink-soft); font-size:12.5px;">No hay productos sueltos que coincidan.</div>`; return; }
+  box.innerHTML = candidatos.map(p=>`<div class="row-actions" style="justify-content:space-between; padding:5px 0;">
+    <span>${esc(p.nombre)} <span class="meta" style="color:var(--ink-soft); font-size:12px;">(${esc(p.proveedor||'—')}, costo ${money(p.costo)})</span></span>
+    <button class="btn small secondary" onclick="agregarOpcionAMaestro('${maestroId}', '${p.id}')">Agregar</button>
+  </div>`).join('');
+}
+function agregarOpcionAMaestro(maestroId, productoId){
+  const m = maestros.find(x=>x.id===maestroId);
+  const p = productos.find(x=>x.id===productoId);
+  if(!m || !p) return;
+  m.stock = (Number(m.stock)||0) + (Number(p.stock)||0);
+  p.maestroId = m.id;
+  p.stock = 0;
+  saveMaestros();
+  saveProductos();
+  openMaestroModal(maestroId);
+  showToast('Opción agregada');
+}
+function quitarOpcionDeMaestro(productoId){
+  const p = productos.find(x=>x.id===productoId);
+  if(!p || !p.maestroId) return;
+  if(!confirm('¿Quitar esta opción de proveedor de la agrupación? El stock combinado no se reparte solo: esta opción va a quedar en 0 y vas a tener que cargarle stock de nuevo si hace falta.')) return;
+  const maestroId = p.maestroId;
+  p.maestroId = null;
+  p.stock = 0;
+  saveProductos();
+  const restantes = opcionesDelMaestro(maestroId);
+  if(restantes.length === 0){
+    const m = maestros.find(x=>x.id===maestroId);
+    const stockPerdido = m ? Number(m.stock)||0 : 0;
+    maestros = maestros.filter(x=>x.id!==maestroId);
+    saveMaestros();
+    closeModal();
+    render();
+    showToast(`Agrupación eliminada (no le quedaban proveedores vinculados). Su stock era ${stockPerdido} unidad(es).`);
+  }else{
+    openMaestroModal(maestroId);
+  }
+}
+function disolverMaestro(maestroId){
+  const m = maestros.find(x=>x.id===maestroId);
+  if(!m) return;
+  const ops = opcionesDelMaestro(maestroId);
+  if(!confirm(`¿Disolver esta agrupación? Las ${ops.length} opción(es) de proveedor vuelven a aparecer sueltas. El stock combinado (${Number(m.stock)||0} unidad(es)) va a quedar todo en la primera opción de la lista — revisalo y repartilo a mano si hace falta.`)) return;
+  ops.forEach((p,i)=>{
+    p.maestroId = null;
+    p.stock = i === 0 ? (Number(m.stock)||0) : 0;
+  });
+  maestros = maestros.filter(x=>x.id!==maestroId);
+  saveProductos();
+  saveMaestros();
+  if(selectedProductId === maestroId) selectedProductId = null;
+  closeModal();
+  render();
+  showToast('Agrupación disuelta');
+}
+
+function openFaltantePicker(maestroId){
+  const ops = opcionesDelMaestro(maestroId);
+  if(ops.length === 0) return;
+  if(ops.length === 1) return openFaltanteModal(ops[0].id);
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>¿A qué proveedor le pedís?</h3>
+      <div class="subtitle">Este producto agrupa varias opciones de proveedor.</div>
+      ${ops.map(o=>`<div class="row-actions" style="justify-content:space-between; padding:8px 0; border-bottom:1px dashed var(--line);">
+        <span>${esc(o.proveedor||'—')} <span class="meta" style="color:var(--ink-soft); font-size:12px;">(costo ${money(o.costo)})</span></span>
+        <button class="btn small" onclick="openFaltanteModal('${o.id}')">Elegir</button>
+      </div>`).join('')}
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button></div>
+    </div>
+  </div>`;
+}
+
 function openFaltanteModal(productId){
   const p = productos.find(x=>x.id===productId);
   if(!p) return;
-  const sugerido = Math.max(1, (Number(p.stockMin)||0) - (Number(p.stock)||0));
+  const sugerido = Math.max(1, stockMinActualDe(p) - stockActualDe(p));
   const modal = document.getElementById('modalRoot');
   modal.innerHTML = `
   <div class="overlay" onclick="if(event.target===this) closeModal()">
@@ -1961,18 +2319,24 @@ function confirmarRecepcion(pedidoId){
 
   const totalItemsOriginal = ped.items.length;
   const nuevosItems = [];
+  let tocoAlgunMaestro = false;
   ped.items.forEach((it, idx)=>{
     const recibido = recibidos[idx] !== undefined ? recibidos[idx] : 0;
     const pedidoQty = Number(it.cantidad)||0;
     if(recibido > 0){
       const p = productos.find(x=>x.id===it.productId);
-      if(p) p.stock = (Number(p.stock)||0) + recibido;
+      if(p){
+        const m = maestroDe(p);
+        if(m){ m.stock = (Number(m.stock)||0) + recibido; tocoAlgunMaestro = true; }
+        else p.stock = (Number(p.stock)||0) + recibido;
+      }
     }
     const faltante = pedidoQty - recibido;
     if(faltante > 0){
       nuevosItems.push({ ...it, cantidad: faltante });
     }
   });
+  if(tocoAlgunMaestro) saveMaestros();
   const productosFaltantes = nuevosItems.length;
   const productosLlegaron = totalItemsOriginal - productosFaltantes;
 
@@ -2218,7 +2582,7 @@ function calcularMetricasProveedor(pr){
     for(const it of ped.items){
       const prod = productos.find(x=>x.id===it.productId);
       const costoUnit = prod ? Number(prod.costo)||0 : 0;
-      const ventaUnit = prod ? Number(prod.venta)||0 : 0;
+      const ventaUnit = prod ? ventaActualDe(prod) : 0;
       const cant = Number(it.cantidad)||0;
       totalComprado += costoUnit * cant;
       totalVenta += ventaUnit * cant;
@@ -2274,7 +2638,7 @@ function calcularTotalesPorMes(){
     for(const it of ped.items){
       const prod = productos.find(x=>x.id===it.productId);
       const costoUnit = prod ? Number(prod.costo)||0 : 0;
-      const ventaUnit = prod ? Number(prod.venta)||0 : 0;
+      const ventaUnit = prod ? ventaActualDe(prod) : 0;
       const cant = Number(it.cantidad)||0;
       totales[key].compras += costoUnit * cant;
       totales[key].ventas += ventaUnit * cant;
@@ -3249,7 +3613,7 @@ async function confirmarImport(){
 function exportarCSV(){
   const rows = [['Nombre','Categoria','Codigo','Stock','Precio costo','Precio venta','Proveedor']];
   for(const p of productos){
-    rows.push([p.nombre, p.categoria||'', p.codigo||'', p.stock||0, p.costo||0, p.venta||0, p.proveedor||'']);
+    rows.push([p.nombre, p.categoria||'', p.codigo||'', stockActualDe(p), p.costo||0, ventaActualDe(p), p.proveedor||'']);
   }
   const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
