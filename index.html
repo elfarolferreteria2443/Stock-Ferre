@@ -2871,9 +2871,14 @@ function removeProveedorPct(provId, field){
 }
 
 /* ================= MÉTRICAS ================= */
-/* Por proveedor: compras (pedidos recibidos), ventas reales de sus productos (pestaña Ventas),
-   ganancia y margen de esas ventas, valor del stock y cantidad de artículos.
-   Todo lo que es seguimiento de pedidos (pendientes, sin enviar) vive en la pestaña Pedidos. */
+/* Compras: facturas (cargos) cargadas en Cuentas corrientes.
+   Ventas y margen: por RUBRO, porque una venta de un producto "maestro" puede venir de
+   varios proveedores; si todos esos proveedores son del mismo rubro, la venta cuenta ahí.
+   Cada proveedor se asigna a un rubro desde esta misma pestaña.
+   Todo lo que es seguimiento de pedidos vive en la pestaña Pedidos. */
+const RUBROS_NEGOCIO = ['Ferretería','Sanitarios','Pintura','Electricidad','Herrajes','Máquinas'];
+const SIN_RUBRO = 'Sin rubro asignado';
+
 function pedidosDelProveedor(pr){
   const nombreNorm = normTxt(pr.nombre);
   return pedidos.filter(p => p.proveedorId ? p.proveedorId === pr.id : normTxt(p.proveedor) === nombreNorm);
@@ -2886,40 +2891,71 @@ function valorCompraPedido(ped){
   }
   return total;
 }
-// ¿De qué proveedor es esta venta? Por el producto vendido; si fue un producto "maestro"
-// (que agrupa varios proveedores) solo cuenta si pertenece a un único proveedor.
-function proveedorIdDeVenta(v){
+function comprasDelProveedor(prId){
+  return cuentasMovimientos.filter(m => m.tipo === 'cargo' && m.proveedorId === prId);
+}
+function rubroDeProveedorId(prId){
+  const pr = proveedores.find(x=>x.id===prId);
+  return (pr && RUBROS_NEGOCIO.includes(pr.rubroNegocio)) ? pr.rubroNegocio : SIN_RUBRO;
+}
+// Rubro de una venta: por el proveedor del producto vendido. Si fue un "maestro",
+// por el rubro común de todos sus proveedores (si no coinciden, queda sin rubro).
+function rubroDeVenta(v){
+  let provIds = [];
   if(v.productId){
     const prod = productos.find(x=>x.id===v.productId);
-    if(prod && prod.proveedorId) return prod.proveedorId;
+    if(prod && prod.proveedorId) provIds = [prod.proveedorId];
+  }else if(v.maestroId){
+    provIds = opcionesDelMaestro(v.maestroId).map(p=>p.proveedorId).filter(Boolean);
   }
-  const pr = proveedores.find(x => normTxt(x.nombre) === normTxt(v.proveedor||''));
-  return pr ? pr.id : null;
+  if(!provIds.length){
+    const pr = proveedores.find(x => normTxt(x.nombre) === normTxt(v.proveedor||''));
+    if(pr) provIds = [pr.id];
+  }
+  const rubros = [...new Set(provIds.map(rubroDeProveedorId))];
+  return rubros.length === 1 ? rubros[0] : SIN_RUBRO;
 }
 function importeVenta(v){ return (Number(v.precioVenta)||0) * (Number(v.cantidad)||0); }
 function costoVenta(v){ return (Number(v.costo)||0) * (Number(v.cantidad)||0); }
 // Margen sobre el costo, igual que las ganancias que se cargan en Proveedores.
 function margenPctDe(ventas, costo){ return costo > 0 ? ((ventas - costo) / costo) * 100 : null; }
 
+function asignarRubroProveedor(prId, rubro){
+  const pr = proveedores.find(x=>x.id===prId);
+  if(!pr) return;
+  pr.rubroNegocio = RUBROS_NEGOCIO.includes(rubro) ? rubro : '';
+  saveProveedores();
+  render();
+}
+
 function calcularMetricasProveedor(pr){
-  const recibidos = pedidosDelProveedor(pr).filter(p => p.estado === 'recibido');
-  const totalComprado = recibidos.reduce((acc,ped)=> acc + valorCompraPedido(ped), 0);
-
-  const ventasProv = ventas.filter(v => proveedorIdDeVenta(v) === pr.id);
-  const totalVentas = ventasProv.reduce((acc,v)=> acc + importeVenta(v), 0);
-  const costoVendido = ventasProv.reduce((acc,v)=> acc + costoVenta(v), 0);
-  const ganancia = totalVentas - costoVendido;
-
+  const totalComprado = comprasDelProveedor(pr.id).reduce((acc,m)=> acc + (Number(m.monto)||0), 0);
   const articulos = productos.filter(p=>p.proveedorId === pr.id);
   const valorStockActual = articulos.reduce((acc,p)=> acc + (Number(p.stock)||0)*(Number(p.costo)||0), 0);
-
   return {
-    totalComprado, totalVentas, costoVendido, ganancia,
-    margenPct: margenPctDe(totalVentas, costoVendido),
+    totalComprado,
+    rubro: rubroDeProveedorId(pr.id),
     cantArticulos: articulos.length,
     cantArticulosConStock: articulos.filter(p => (Number(p.stock)||0) > 0).length,
     valorStockActual,
   };
+}
+
+function calcularMetricasPorRubro(){
+  const res = {};
+  const del = r => (res[r] = res[r] || { compras:0, ventas:0, costoVendido:0, proveedores:0 });
+  for(const pr of proveedores){
+    const r = rubroDeProveedorId(pr.id);
+    const d = del(r);
+    d.proveedores++;
+    d.compras += comprasDelProveedor(pr.id).reduce((acc,m)=> acc + (Number(m.monto)||0), 0);
+  }
+  for(const v of ventas){
+    const d = del(rubroDeVenta(v));
+    d.ventas += importeVenta(v);
+    d.costoVendido += costoVenta(v);
+  }
+  return res;
 }
 
 function mesKeyDe(fecha){ return fecha ? String(fecha).slice(0,7) : null; }
@@ -2936,10 +2972,10 @@ function nombreMes(mesKey){
 function calcularTotalesPorMes(){
   const totales = {};
   const del = key => (totales[key] = totales[key] || { compras:0, ventas:0, costoVendido:0 });
-  for(const ped of pedidos){
-    if(ped.estado !== 'recibido') continue;
-    const key = mesKeyDe(ped.fechaRecibido || ped.fecha);
-    if(key) del(key).compras += valorCompraPedido(ped);
+  for(const m of cuentasMovimientos){
+    if(m.tipo !== 'cargo') continue;
+    const key = mesKeyDe(m.fecha);
+    if(key) del(key).compras += Number(m.monto)||0;
   }
   for(const v of ventas){
     const key = mesKeyDe(v.fecha);
@@ -2978,15 +3014,11 @@ function textoMargen(pct){ return pct != null ? pct.toFixed(1) + '%' : '—'; }
 function renderMetricas(){
   if(proveedores.length === 0){
     return `<div class="empty"><div class="big">Todavía no hay proveedores cargados</div>
-      <div>Las métricas se arman a partir de los proveedores, los pedidos recibidos y las ventas.</div></div>`;
+      <div>Las métricas se arman con las compras de Cuentas corrientes y las ventas registradas.</div></div>`;
   }
 
-  const datos = proveedores.map(pr => ({ pr, m: calcularMetricasProveedor(pr) }));
-
-  const totalCompras = datos.reduce((a,d)=>a+d.m.totalComprado, 0);
-  const totalVentas = datos.reduce((a,d)=>a+d.m.totalVentas, 0);
-  const totalCostoVendido = datos.reduce((a,d)=>a+d.m.costoVendido, 0);
-  const totalGanancia = totalVentas - totalCostoVendido;
+  const porRubro = calcularMetricasPorRubro();
+  const tot = Object.values(porRubro).reduce((a,d)=>({ compras:a.compras+d.compras, ventas:a.ventas+d.ventas, costoVendido:a.costoVendido+d.costoVendido }), { compras:0, ventas:0, costoVendido:0 });
 
   const porMes = calcularTotalesPorMes();
   const keyActual = mesKeyDe(today());
@@ -2996,29 +3028,20 @@ function renderMetricas(){
   const gananciaActual = actual.ventas - actual.costoVendido;
   const gananciaAnterior = anterior.ventas - anterior.costoVendido;
 
-  const sorters = {
-    comprado: (a,b)=> b.m.totalComprado - a.m.totalComprado,
-    ventas: (a,b)=> b.m.totalVentas - a.m.totalVentas,
-    ganancia: (a,b)=> b.m.ganancia - a.m.ganancia,
-    margen: (a,b)=> (b.m.margenPct??-Infinity) - (a.m.margenPct??-Infinity),
-  };
-  if(!sorters[metricasSortBy]) metricasSortBy = 'comprado';
-  datos.sort(sorters[metricasSortBy]);
-
-  const maxComprado = Math.max(1, ...datos.map(d=>d.m.totalComprado));
   const col = (lbl, val, estilo) => `<div style="text-align:right; min-width:92px;">
       <div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.03em;">${lbl}</div>
       <div class="mono" style="font-weight:600; font-size:15px; ${estilo||''}">${val}</div>
     </div>`;
+  const estiloMargen = pct => pct == null ? '' : (pct >= 0 ? 'color:var(--good);' : 'color:var(--danger);');
 
   let html = `
   <div class="dash-toggle" onclick="toggleMetricasResumen()">${metricasResumenVisible ? '▾' : '▸'} Resumen general</div>
   ${metricasResumenVisible ? `
   <div class="dash">
-    <div class="card"><div class="num mono">${money(totalCompras)}</div><div class="lbl">Compras (histórico)</div></div>
-    <div class="card"><div class="num mono">${money(totalVentas)}</div><div class="lbl">Ventas (histórico)</div></div>
-    <div class="card"><div class="num mono">${money(totalGanancia)}</div><div class="lbl">Ganancia de las ventas</div></div>
-    <div class="card"><div class="num">${textoMargen(margenPctDe(totalVentas, totalCostoVendido))}</div><div class="lbl">Margen promedio</div></div>
+    <div class="card"><div class="num mono">${money(tot.compras)}</div><div class="lbl">Compras (histórico)</div></div>
+    <div class="card"><div class="num mono">${money(tot.ventas)}</div><div class="lbl">Ventas (histórico)</div></div>
+    <div class="card"><div class="num mono">${money(tot.ventas - tot.costoVendido)}</div><div class="lbl">Ganancia de las ventas</div></div>
+    <div class="card"><div class="num">${textoMargen(margenPctDe(tot.ventas, tot.costoVendido))}</div><div class="lbl">Margen promedio</div></div>
   </div>
   <div class="step-label">Este mes (${nombreMes(keyActual)}) vs. ${nombreMes(keyAnterior)}</div>
   <div class="dash" style="margin-bottom:18px;">
@@ -3026,33 +3049,53 @@ function renderMetricas(){
     <div class="card"><div class="num mono">${money(actual.ventas)}${flechaComparativa(actual.ventas, anterior.ventas, false)}</div><div class="lbl">Ventas este mes</div></div>
     <div class="card"><div class="num mono">${money(gananciaActual)}${flechaComparativa(gananciaActual, gananciaAnterior, false)}</div><div class="lbl">Ganancia este mes</div></div>
   </div>` : ''}
-  <div class="toolbar">
-    <div class="spacer"></div>
-    <select onchange="metricasSortBy=this.value; render()">
-      <option value="comprado" ${metricasSortBy==='comprado'?'selected':''}>Ordenar por: Compras</option>
-      <option value="ventas" ${metricasSortBy==='ventas'?'selected':''}>Ordenar por: Ventas</option>
-      <option value="ganancia" ${metricasSortBy==='ganancia'?'selected':''}>Ordenar por: Ganancia</option>
-      <option value="margen" ${metricasSortBy==='margen'?'selected':''}>Ordenar por: Margen %</option>
-    </select>
-  </div>`;
+  <div class="step-label">Por rubro</div>`;
 
+  const rubrosAMostrar = [...RUBROS_NEGOCIO, SIN_RUBRO].filter(r => porRubro[r] && (porRubro[r].proveedores || porRubro[r].ventas || porRubro[r].compras));
+  const maxRubro = Math.max(1, ...rubrosAMostrar.map(r => porRubro[r].ventas));
+  for(const r of rubrosAMostrar){
+    const d = porRubro[r];
+    const pct = margenPctDe(d.ventas, d.costoVendido);
+    const esSin = r === SIN_RUBRO;
+    html += `<div class="metric-card metric-card-tight">
+      <div class="metric-head" style="align-items:center;">
+        <div class="metric-name" style="flex:1; min-width:160px; ${esSin ? 'color:var(--ink-soft);' : ''}">${esc(r)}
+          <span style="font-size:12px; font-weight:400; text-transform:none; color:var(--ink-soft);">· ${d.proveedores} proveedor(es)</span></div>
+        <div style="display:flex; gap:16px; flex-wrap:wrap; justify-content:flex-end;">
+          ${col('Compras', money(d.compras), 'color:var(--accent);')}
+          ${col('Ventas', money(d.ventas))}
+          ${col('Ganancia', money(d.ventas - d.costoVendido))}
+          ${col('Margen', textoMargen(pct), estiloMargen(pct))}
+        </div>
+      </div>
+      <div class="metric-bar-wrap" style="margin-bottom:2px;"><div class="metric-bar" style="width:${Math.round((d.ventas/maxRubro)*100)}%;"></div></div>
+    </div>`;
+  }
+  if(porRubro[SIN_RUBRO] && porRubro[SIN_RUBRO].proveedores){
+    html += `<div class="global-pct-note" style="margin:4px 0 14px 0;">Asigná el rubro de cada proveedor en la lista de abajo para que sus compras y ventas cuenten en su rubro.</div>`;
+  }
+
+  const datos = proveedores.map(pr => ({ pr, m: calcularMetricasProveedor(pr) }))
+    .sort((a,b)=> b.m.totalComprado - a.m.totalComprado);
+  const maxComprado = Math.max(1, ...datos.map(d=>d.m.totalComprado));
+
+  html += `<div class="step-label" style="margin-top:18px;">Por proveedor</div>`;
   for(const {pr, m} of datos){
     const barPct = Math.round((m.totalComprado / maxComprado) * 100);
     const expandida = metricasExpandidas.has(pr.id);
-    const colorMargen = m.margenPct == null ? '' : (m.margenPct >= 0 ? 'color:var(--good);' : 'color:var(--danger);');
+    const valorSel = m.rubro === SIN_RUBRO ? '' : m.rubro;
     html += `<div class="metric-card">
       <div class="metric-head" style="cursor:pointer; align-items:center;" onclick="toggleMetricaCard('${pr.id}')">
         <div class="metric-name" style="flex:1; min-width:160px;">${expandida ? '▾' : '▸'} ${esc(pr.nombre)}</div>
-        <div style="display:flex; gap:16px; flex-wrap:wrap; justify-content:flex-end;">
-          ${col('Compras', money(m.totalComprado), 'color:var(--accent);')}
-          ${col('Ventas', money(m.totalVentas))}
-          ${col('Margen', textoMargen(m.margenPct), colorMargen)}
-        </div>
+        <select onclick="event.stopPropagation()" onchange="asignarRubroProveedor('${pr.id}', this.value)" title="Rubro de este proveedor" style="${valorSel ? '' : 'color:var(--warn);'}">
+          <option value="">— Rubro —</option>
+          ${RUBROS_NEGOCIO.map(r=>`<option value="${esc(r)}" ${valorSel===r?'selected':''}>${esc(r)}</option>`).join('')}
+        </select>
+        ${col('Compras', money(m.totalComprado), 'color:var(--accent);')}
       </div>
       <div class="metric-bar-wrap"><div class="metric-bar" style="width:${barPct}%;"></div></div>
       ${expandida ? `
       <div class="metric-stats">
-        <div class="metric-stat"><span class="metric-stat-lbl">Ganancia de las ventas</span><span class="metric-stat-val" style="color:var(--good);">${money(m.ganancia)}</span></div>
         <div class="metric-stat"><span class="metric-stat-lbl">Valor de su stock actual</span><span class="metric-stat-val">${money(m.valorStockActual)}</span></div>
         <div class="metric-stat"><span class="metric-stat-lbl">Artículos de este proveedor</span><span class="metric-stat-val">${m.cantArticulos}${m.cantArticulos ? ` <span style="color:var(--ink-soft); font-weight:400;">(${m.cantArticulosConStock} con stock)</span>` : ''}</span></div>
       </div>` : ''}
