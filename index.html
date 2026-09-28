@@ -2204,8 +2204,21 @@ function saveProducto(id){
 }
 
 /* ================= PEDIDOS ================= */
+function renderPedidosResumen(){
+  if(pedidos.length === 0) return '';
+  const pendientes = pedidos.filter(p => p.estado === 'pendiente');
+  const sinEnviar = pendientes.filter(p => !p.enviado).length;
+  const recibidos = pedidos.filter(p => p.estado === 'recibido').length;
+  const valorPendiente = pendientes.reduce((acc,ped)=> acc + valorCompraPedido(ped), 0);
+  return `<div class="dash">
+    <div class="card warn"><div class="num mono">${money(valorPendiente)}</div><div class="lbl">En pedidos pendientes</div></div>
+    <div class="card"><div class="num">${pendientes.length}</div><div class="lbl">Pedidos pendientes${sinEnviar > 0 ? ` · ${sinEnviar} sin enviar` : ''}</div></div>
+    <div class="card"><div class="num">${recibidos}</div><div class="lbl">Pedidos recibidos</div></div>
+  </div>`;
+}
+
 function renderPedidos(){
-  let html = `<div class="toolbar">
+  let html = `${renderPedidosResumen()}<div class="toolbar">
     <div class="search-wrap">
       <input id="pedidos_search_input" type="text" placeholder="Buscar por proveedor o producto..." value="${esc(searchPedidos)}" oninput="searchPedidos=this.value; renderPedidosList();">
       ${searchPedidos ? `<button class="icon-btn" title="Limpiar búsqueda" onclick="searchPedidos=''; render();">✕</button>` : ''}
@@ -2858,49 +2871,54 @@ function removeProveedorPct(provId, field){
 }
 
 /* ================= MÉTRICAS ================= */
-function calcularMetricasProveedor(pr){
+/* Por proveedor: compras (pedidos recibidos), ventas reales de sus productos (pestaña Ventas),
+   ganancia y margen de esas ventas, valor del stock y cantidad de artículos.
+   Todo lo que es seguimiento de pedidos (pendientes, sin enviar) vive en la pestaña Pedidos. */
+function pedidosDelProveedor(pr){
   const nombreNorm = normTxt(pr.nombre);
-  const pedidosProv = pedidos.filter(p => p.proveedorId ? p.proveedorId === pr.id : normTxt(p.proveedor) === nombreNorm);
-  const recibidos = pedidosProv.filter(p => p.estado === 'recibido');
-  const pendientes = pedidosProv.filter(p => p.estado === 'pendiente');
-
-  let totalComprado = 0, totalVenta = 0;
-  for(const ped of recibidos){
-    for(const it of ped.items){
-      const prod = productos.find(x=>x.id===it.productId);
-      const costoUnit = prod ? Number(prod.costo)||0 : 0;
-      const ventaUnit = prod ? ventaActualDe(prod) : 0;
-      const cant = Number(it.cantidad)||0;
-      totalComprado += costoUnit * cant;
-      totalVenta += ventaUnit * cant;
-    }
+  return pedidos.filter(p => p.proveedorId ? p.proveedorId === pr.id : normTxt(p.proveedor) === nombreNorm);
+}
+function valorCompraPedido(ped){
+  let total = 0;
+  for(const it of (ped.items||[])){
+    const prod = productos.find(x=>x.id===it.productId);
+    total += (prod ? Number(prod.costo)||0 : 0) * (Number(it.cantidad)||0);
   }
-  const totalGanancia = totalVenta - totalComprado;
-  const margenPct = totalComprado > 0 ? (totalGanancia/totalComprado)*100 : null;
-
-  let totalPendiente = 0;
-  for(const ped of pendientes){
-    for(const it of ped.items){
-      const prod = productos.find(x=>x.id===it.productId);
-      const costoUnit = prod ? Number(prod.costo)||0 : 0;
-      totalPendiente += costoUnit * (Number(it.cantidad)||0);
-    }
+  return total;
+}
+// ¿De qué proveedor es esta venta? Por el producto vendido; si fue un producto "maestro"
+// (que agrupa varios proveedores) solo cuenta si pertenece a un único proveedor.
+function proveedorIdDeVenta(v){
+  if(v.productId){
+    const prod = productos.find(x=>x.id===v.productId);
+    if(prod && prod.proveedorId) return prod.proveedorId;
   }
+  const pr = proveedores.find(x => normTxt(x.nombre) === normTxt(v.proveedor||''));
+  return pr ? pr.id : null;
+}
+function importeVenta(v){ return (Number(v.precioVenta)||0) * (Number(v.cantidad)||0); }
+function costoVenta(v){ return (Number(v.costo)||0) * (Number(v.cantidad)||0); }
+// Margen sobre el costo, igual que las ganancias que se cargan en Proveedores.
+function margenPctDe(ventas, costo){ return costo > 0 ? ((ventas - costo) / costo) * 100 : null; }
 
-  const productosVinculados = productos.filter(p=>p.proveedorId === pr.id);
-  const valorStockActual = productosVinculados.reduce((acc,p)=> acc + (Number(p.stock)||0)*(Number(p.costo)||0), 0);
-  const sinEnviar = pendientes.filter(p=>!p.enviado).length;
+function calcularMetricasProveedor(pr){
+  const recibidos = pedidosDelProveedor(pr).filter(p => p.estado === 'recibido');
+  const totalComprado = recibidos.reduce((acc,ped)=> acc + valorCompraPedido(ped), 0);
+
+  const ventasProv = ventas.filter(v => proveedorIdDeVenta(v) === pr.id);
+  const totalVentas = ventasProv.reduce((acc,v)=> acc + importeVenta(v), 0);
+  const costoVendido = ventasProv.reduce((acc,v)=> acc + costoVenta(v), 0);
+  const ganancia = totalVentas - costoVendido;
+
+  const articulos = productos.filter(p=>p.proveedorId === pr.id);
+  const valorStockActual = articulos.reduce((acc,p)=> acc + (Number(p.stock)||0)*(Number(p.costo)||0), 0);
 
   return {
-    pedidosTotales: pedidosProv.length,
-    pedidosRecibidos: recibidos.length,
-    pedidosPendientes: pendientes.length,
-    pedidosSinEnviar: sinEnviar,
-    totalComprado, totalVenta, totalGanancia, margenPct,
-    totalPendiente,
-    productosVinculados: productosVinculados.length,
+    totalComprado, totalVentas, costoVendido, ganancia,
+    margenPct: margenPctDe(totalVentas, costoVendido),
+    cantArticulos: articulos.length,
+    cantArticulosConStock: articulos.filter(p => (Number(p.stock)||0) > 0).length,
     valorStockActual,
-    ultimaImportacion: pr.ultimaImportacion || null,
   };
 }
 
@@ -2917,19 +2935,17 @@ function nombreMes(mesKey){
 }
 function calcularTotalesPorMes(){
   const totales = {};
+  const del = key => (totales[key] = totales[key] || { compras:0, ventas:0, costoVendido:0 });
   for(const ped of pedidos){
     if(ped.estado !== 'recibido') continue;
     const key = mesKeyDe(ped.fechaRecibido || ped.fecha);
+    if(key) del(key).compras += valorCompraPedido(ped);
+  }
+  for(const v of ventas){
+    const key = mesKeyDe(v.fecha);
     if(!key) continue;
-    if(!totales[key]) totales[key] = { compras:0, ventas:0 };
-    for(const it of ped.items){
-      const prod = productos.find(x=>x.id===it.productId);
-      const costoUnit = prod ? Number(prod.costo)||0 : 0;
-      const ventaUnit = prod ? ventaActualDe(prod) : 0;
-      const cant = Number(it.cantidad)||0;
-      totales[key].compras += costoUnit * cant;
-      totales[key].ventas += ventaUnit * cant;
-    }
+    del(key).ventas += importeVenta(v);
+    del(key).costoVendido += costoVenta(v);
   }
   return totales;
 }
@@ -2957,45 +2973,52 @@ function toggleMetricasResumen(){
   render();
 }
 
+function textoMargen(pct){ return pct != null ? pct.toFixed(1) + '%' : '—'; }
+
 function renderMetricas(){
   if(proveedores.length === 0){
     return `<div class="empty"><div class="big">Todavía no hay proveedores cargados</div>
-      <div>Las métricas se arman a partir de los proveedores y los pedidos que vayas registrando.</div></div>`;
+      <div>Las métricas se arman a partir de los proveedores, los pedidos recibidos y las ventas.</div></div>`;
   }
 
   const datos = proveedores.map(pr => ({ pr, m: calcularMetricasProveedor(pr) }));
 
-  const totalGeneralComprado = datos.reduce((a,d)=>a+d.m.totalComprado, 0);
-  const totalGeneralGanancia = datos.reduce((a,d)=>a+d.m.totalGanancia, 0);
-  const totalGeneralPendiente = datos.reduce((a,d)=>a+d.m.totalPendiente, 0);
-  const margenGeneralPct = totalGeneralComprado > 0 ? (totalGeneralGanancia/totalGeneralComprado)*100 : null;
+  const totalCompras = datos.reduce((a,d)=>a+d.m.totalComprado, 0);
+  const totalVentas = datos.reduce((a,d)=>a+d.m.totalVentas, 0);
+  const totalCostoVendido = datos.reduce((a,d)=>a+d.m.costoVendido, 0);
+  const totalGanancia = totalVentas - totalCostoVendido;
 
   const porMes = calcularTotalesPorMes();
   const keyActual = mesKeyDe(today());
   const keyAnterior = mesAnteriorKey(keyActual);
-  const actual = porMes[keyActual] || { compras:0, ventas:0 };
-  const anterior = porMes[keyAnterior] || { compras:0, ventas:0 };
-  const gananciaActual = actual.ventas - actual.compras;
-  const gananciaAnterior = anterior.ventas - anterior.compras;
+  const actual = porMes[keyActual] || { compras:0, ventas:0, costoVendido:0 };
+  const anterior = porMes[keyAnterior] || { compras:0, ventas:0, costoVendido:0 };
+  const gananciaActual = actual.ventas - actual.costoVendido;
+  const gananciaAnterior = anterior.ventas - anterior.costoVendido;
 
   const sorters = {
     comprado: (a,b)=> b.m.totalComprado - a.m.totalComprado,
-    ganancia: (a,b)=> b.m.totalGanancia - a.m.totalGanancia,
+    ventas: (a,b)=> b.m.totalVentas - a.m.totalVentas,
+    ganancia: (a,b)=> b.m.ganancia - a.m.ganancia,
     margen: (a,b)=> (b.m.margenPct??-Infinity) - (a.m.margenPct??-Infinity),
-    pedidos: (a,b)=> b.m.pedidosTotales - a.m.pedidosTotales,
   };
-  datos.sort(sorters[metricasSortBy] || sorters.comprado);
+  if(!sorters[metricasSortBy]) metricasSortBy = 'comprado';
+  datos.sort(sorters[metricasSortBy]);
 
   const maxComprado = Math.max(1, ...datos.map(d=>d.m.totalComprado));
+  const col = (lbl, val, estilo) => `<div style="text-align:right; min-width:92px;">
+      <div style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.03em;">${lbl}</div>
+      <div class="mono" style="font-weight:600; font-size:15px; ${estilo||''}">${val}</div>
+    </div>`;
 
   let html = `
   <div class="dash-toggle" onclick="toggleMetricasResumen()">${metricasResumenVisible ? '▾' : '▸'} Resumen general</div>
   ${metricasResumenVisible ? `
   <div class="dash">
-    <div class="card"><div class="num mono">${money(totalGeneralComprado)}</div><div class="lbl">Comprado total (histórico)</div></div>
-    <div class="card"><div class="num mono">${money(totalGeneralGanancia)}</div><div class="lbl">Ganancia generada (histórico)</div></div>
-    <div class="card"><div class="num">${margenGeneralPct!=null ? margenGeneralPct.toFixed(1)+'%' : '—'}</div><div class="lbl">Margen promedio</div></div>
-    <div class="card warn"><div class="num mono">${money(totalGeneralPendiente)}</div><div class="lbl">En pedidos pendientes</div></div>
+    <div class="card"><div class="num mono">${money(totalCompras)}</div><div class="lbl">Compras (histórico)</div></div>
+    <div class="card"><div class="num mono">${money(totalVentas)}</div><div class="lbl">Ventas (histórico)</div></div>
+    <div class="card"><div class="num mono">${money(totalGanancia)}</div><div class="lbl">Ganancia de las ventas</div></div>
+    <div class="card"><div class="num">${textoMargen(margenPctDe(totalVentas, totalCostoVendido))}</div><div class="lbl">Margen promedio</div></div>
   </div>
   <div class="step-label">Este mes (${nombreMes(keyActual)}) vs. ${nombreMes(keyAnterior)}</div>
   <div class="dash" style="margin-bottom:18px;">
@@ -3006,31 +3029,32 @@ function renderMetricas(){
   <div class="toolbar">
     <div class="spacer"></div>
     <select onchange="metricasSortBy=this.value; render()">
-      <option value="comprado" ${metricasSortBy==='comprado'?'selected':''}>Ordenar por: Total comprado</option>
-      <option value="ganancia" ${metricasSortBy==='ganancia'?'selected':''}>Ordenar por: Ganancia generada</option>
+      <option value="comprado" ${metricasSortBy==='comprado'?'selected':''}>Ordenar por: Compras</option>
+      <option value="ventas" ${metricasSortBy==='ventas'?'selected':''}>Ordenar por: Ventas</option>
+      <option value="ganancia" ${metricasSortBy==='ganancia'?'selected':''}>Ordenar por: Ganancia</option>
       <option value="margen" ${metricasSortBy==='margen'?'selected':''}>Ordenar por: Margen %</option>
-      <option value="pedidos" ${metricasSortBy==='pedidos'?'selected':''}>Ordenar por: Cantidad de pedidos</option>
     </select>
   </div>`;
 
   for(const {pr, m} of datos){
     const barPct = Math.round((m.totalComprado / maxComprado) * 100);
     const expandida = metricasExpandidas.has(pr.id);
+    const colorMargen = m.margenPct == null ? '' : (m.margenPct >= 0 ? 'color:var(--good);' : 'color:var(--danger);');
     html += `<div class="metric-card">
-      <div class="metric-head" style="cursor:pointer;" onclick="toggleMetricaCard('${pr.id}')">
-        <div class="metric-name">${expandida ? '▾' : '▸'} ${esc(pr.nombre)}</div>
-        <div class="metric-comprado">${money(m.totalComprado)}</div>
+      <div class="metric-head" style="cursor:pointer; align-items:center;" onclick="toggleMetricaCard('${pr.id}')">
+        <div class="metric-name" style="flex:1; min-width:160px;">${expandida ? '▾' : '▸'} ${esc(pr.nombre)}</div>
+        <div style="display:flex; gap:16px; flex-wrap:wrap; justify-content:flex-end;">
+          ${col('Compras', money(m.totalComprado), 'color:var(--accent);')}
+          ${col('Ventas', money(m.totalVentas))}
+          ${col('Margen', textoMargen(m.margenPct), colorMargen)}
+        </div>
       </div>
       <div class="metric-bar-wrap"><div class="metric-bar" style="width:${barPct}%;"></div></div>
       ${expandida ? `
       <div class="metric-stats">
-        <div class="metric-stat"><span class="metric-stat-lbl">Ganancia generada</span><span class="metric-stat-val" style="color:var(--good);">${money(m.totalGanancia)}</span></div>
-        <div class="metric-stat"><span class="metric-stat-lbl">Margen</span><span class="metric-stat-val">${m.margenPct!=null ? m.margenPct.toFixed(1)+'%' : '—'}</span></div>
-        <div class="metric-stat"><span class="metric-stat-lbl">Pedidos</span><span class="metric-stat-val">${m.pedidosRecibidos} recibidos · ${m.pedidosPendientes} pendientes${m.pedidosSinEnviar>0 ? ` (${m.pedidosSinEnviar} sin enviar)`:''}</span></div>
-        <div class="metric-stat"><span class="metric-stat-lbl">En pedidos pendientes</span><span class="metric-stat-val" style="color:var(--warn);">${money(m.totalPendiente)}</span></div>
-        <div class="metric-stat"><span class="metric-stat-lbl">Productos vinculados</span><span class="metric-stat-val">${m.productosVinculados}</span></div>
+        <div class="metric-stat"><span class="metric-stat-lbl">Ganancia de las ventas</span><span class="metric-stat-val" style="color:var(--good);">${money(m.ganancia)}</span></div>
         <div class="metric-stat"><span class="metric-stat-lbl">Valor de su stock actual</span><span class="metric-stat-val">${money(m.valorStockActual)}</span></div>
-        <div class="metric-stat"><span class="metric-stat-lbl">Última lista importada</span><span class="metric-stat-val">${m.ultimaImportacion || '—'}</span></div>
+        <div class="metric-stat"><span class="metric-stat-lbl">Artículos de este proveedor</span><span class="metric-stat-val">${m.cantArticulos}${m.cantArticulos ? ` <span style="color:var(--ink-soft); font-weight:400;">(${m.cantArticulosConStock} con stock)</span>` : ''}</span></div>
       </div>` : ''}
     </div>`;
   }
