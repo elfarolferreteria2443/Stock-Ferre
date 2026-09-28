@@ -3852,15 +3852,14 @@ async function procesarPdfConIA(file){
 
 function aplicarFilasDesdeIA(items){
   const pr = proveedores.find(x=>x.id===importCtx.proveedorId);
+  const buscar = crearBuscadorImport(importCtx.proveedorId);
   const rows = items.map(it=>{
     const nombre = String(it.descripcion||'').trim();
     const codigo = String(it.codigo||'').trim();
     const rubro = String(it.rubro||'').trim();
     const um = String(it.um||'').trim();
     const precioParsed = Number(it.precio);
-    let match = null;
-    if(codigo){ match = productos.find(p => p.codigo && normTxt(p.codigo) === normTxt(codigo)); }
-    if(!match && nombre){ match = productos.find(p => normTxt(p.nombre) === normTxt(nombre)); }
+    const match = buscar(codigo, nombre);
     const costoNeto = isNaN(precioParsed) ? 0 : aplicarDescuentos(precioParsed, getDescuentos(pr));
     const venta = redondearPrecio(aplicarGlobales(aplicarGanancias(costoNeto, getGanancias(pr))));
     return { nombre, codigo, rubro, um, precioParsed, costoNeto, venta, match, incluir: !isNaN(precioParsed) && nombre !== '' };
@@ -3927,8 +3926,21 @@ function mostrarSelectorProveedorLote(file, sugeridos){
       <div class="field"><label>Proveedor</label>
         <select id="lote_proveedor_sel">
           <option value="">— Elegir —</option>
+          <option value="__nuevo__" ${proveedores.length===0 ? 'selected':''}>➕ Nuevo proveedor…</option>
           ${proveedores.map(pr=>`<option value="${pr.id}" ${sugeridos.length===1 && sugeridos[0].id===pr.id ? 'selected':''}>${esc(pr.nombre)}</option>`).join('')}
         </select>
+      </div>
+      <div id="lote_nuevo_prov" style="display:none;">
+        <div class="field"><label>Nombre del proveedor nuevo</label>
+          <input id="lote_nuevo_nombre" type="text" value="${esc(file.name.replace(/\.(xlsx|xls|csv|xlsm|pdf)$/i, '').trim())}">
+        </div>
+        <div class="field"><label>Descuento que te hacen (%)</label>
+          <input id="lote_nuevo_desc" type="number" step="1" value="0">
+        </div>
+        <div class="field"><label>Ganancia que querés agregar (%)</label>
+          <input id="lote_nuevo_gan" type="number" step="1" value="0">
+        </div>
+        <div class="meta" style="margin-bottom:10px;">WhatsApp, mail y descuentos en cascada se completan después en la pestaña Proveedores.</div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" onclick="cancelarLote()">Cancelar todo el lote</button>
@@ -3937,11 +3949,38 @@ function mostrarSelectorProveedorLote(file, sugeridos){
       </div>
     </div>
   </div>`;
+  const sel = document.getElementById('lote_proveedor_sel');
+  const toggleNuevo = () => {
+    const esNuevo = sel.value === '__nuevo__';
+    document.getElementById('lote_nuevo_prov').style.display = esNuevo ? '' : 'none';
+    if(esNuevo) document.getElementById('lote_nuevo_nombre').select();
+  };
+  sel.onchange = toggleNuevo;
+  toggleNuevo();
 }
 
 function confirmarProveedorLote(){
-  const id = document.getElementById('lote_proveedor_sel').value;
+  let id = document.getElementById('lote_proveedor_sel').value;
   if(!id){ showToast('Elegí un proveedor'); return; }
+  if(id === '__nuevo__'){
+    const nombre = document.getElementById('lote_nuevo_nombre').value.trim();
+    if(!nombre){ showToast('Poné un nombre para el proveedor'); return; }
+    if(proveedores.some(pr => normTxt(pr.nombre) === normTxt(nombre))){
+      showToast('Ya existe un proveedor con ese nombre. Elegilo de la lista.');
+      return;
+    }
+    const nuevo = {
+      id: uid(),
+      nombre,
+      descuentos: [Number(document.getElementById('lote_nuevo_desc').value) || 0],
+      ganancias: [Number(document.getElementById('lote_nuevo_gan').value) || 0],
+      whatsapp: '', mail: '', contacto: '',
+    };
+    proveedores.push(nuevo);
+    saveProveedores();
+    showToast(`Proveedor "${nombre}" creado`);
+    id = nuevo.id;
+  }
   abrirImportLoteParaProveedor(id, window.__loteFileTemp);
 }
 
@@ -4041,7 +4080,6 @@ document.addEventListener('drop', e=>{
     if(files.length > 1) showToast('En esta ventana se carga un archivo por vez: se usó ' + files[0].name);
     cargarArchivoEnContexto(files[0]);
   }else if(destino === 'lote'){
-    if(proveedores.length === 0){ showToast('Primero agregá un proveedor en la pestaña Proveedores.'); return; }
     iniciarLoteConArchivos(files);
   }else{
     showToast('Cerrá la ventana abierta para poder importar la lista.');
@@ -4215,6 +4253,20 @@ function setSelectVal(id, val){
 
 function normTxt(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
 
+/* Índice para encontrar rápido el producto existente que corresponde a una fila importada.
+   Solo mira productos de ESE proveedor (o sin proveedor asignado): así un proveedor nuevo
+   no se "roba" productos con el mismo nombre de otro proveedor. */
+function crearBuscadorImport(proveedorId){
+  const porCodigo = new Map(), porNombre = new Map();
+  for(const p of productos){
+    if(p.proveedorId && p.proveedorId !== proveedorId) continue;
+    if(p.codigo){ const k = normTxt(p.codigo); if(!porCodigo.has(k)) porCodigo.set(k, p); }
+    const kn = normTxt(p.nombre); if(kn && !porNombre.has(kn)) porNombre.set(kn, p);
+  }
+  return (codigo, nombre) =>
+    (codigo && porCodigo.get(normTxt(codigo))) || (nombre && porNombre.get(normTxt(nombre))) || null;
+}
+
 function generarPreviewImport(){
   const getCol = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v); };
   const colCodigo = getCol('im_col_codigo');
@@ -4231,15 +4283,14 @@ function generarPreviewImport(){
   if(dataRows.length === 0){ showToast('No hay filas de datos a partir de esa fila'); return; }
 
   const pr = proveedores.find(x=>x.id===importCtx.proveedorId);
+  const buscar = crearBuscadorImport(importCtx.proveedorId);
   const rows = dataRows.map(r=>{
     const nombre = String(r[colDescripcion] ?? '').trim();
     const codigo = colCodigo !== null ? String(r[colCodigo] ?? '').trim() : '';
     const rubro = colRubro !== null ? String(r[colRubro] ?? '').trim() : '';
     const um = colUM !== null ? String(r[colUM] ?? '').trim() : '';
     const precioParsed = parsePrecioAR(r[colPrecio]);
-    let match = null;
-    if(codigo){ match = productos.find(p => p.codigo && normTxt(p.codigo) === normTxt(codigo)); }
-    if(!match && nombre){ match = productos.find(p => normTxt(p.nombre) === normTxt(nombre)); }
+    const match = buscar(codigo, nombre);
     const costoNeto = isNaN(precioParsed) ? 0 : (yaDescuento ? precioParsed : aplicarDescuentos(precioParsed, getDescuentos(pr)));
     const venta = redondearPrecio(aplicarGlobales(aplicarGanancias(costoNeto, getGanancias(pr))));
     return { nombre, codigo, rubro, um, precioParsed, costoNeto, venta, match, incluir: !isNaN(precioParsed) && nombre !== '' };
@@ -4258,11 +4309,14 @@ function renderImportPreview(){
   const rows = importCtx.rows;
   const nuevos = rows.filter(r=>!r.match).length;
   const existentes = rows.filter(r=>r.match).length;
+  const sinPrecio = rows.filter(r=>!r.incluir).length;
+  const PREVIEW_FILAS = 5; // solo se dibujan las primeras filas, para que cargue rápido con listas grandes
   let html = `<div class="step-label">Vista previa — ${existentes} para actualizar, ${nuevos} nuevos</div>
+  <div class="meta" style="margin-bottom:6px;">Se muestran las primeras ${Math.min(PREVIEW_FILAS, rows.length)} de ${rows.length} filas.${sinPrecio ? ` ${sinPrecio} fila(s) sin precio válido no se van a importar.` : ''}</div>
   <div class="preview-wrap" style="max-height:200px;"><table><thead><tr>
     <th></th><th>Código</th><th>Rubro</th><th>Descripción</th><th>Precio</th><th>UM</th><th>Estado</th>
   </tr></thead><tbody>`;
-  rows.forEach((r,idx)=>{
+  rows.slice(0, PREVIEW_FILAS).forEach((r,idx)=>{
     html += `<tr>
       <td><input type="checkbox" ${r.incluir?'checked':''} onchange="importCtx.rows[${idx}].incluir=this.checked"></td>
       <td class="mono">${r.codigo?esc(r.codigo):'—'}</td>
