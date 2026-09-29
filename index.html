@@ -101,6 +101,14 @@
     content:'✓'; position:absolute; left:1px; top:-4px; color:#fff; font-size:12px; font-weight:800;
   }
   tr.row-selected{ background:#fdeee3 !important; }
+  /* Proveedores de un producto agrupado, desplegados debajo de su fila en Control de stock */
+  table.resizable tbody tr.sub-opcion{ background:#f4f2ec !important; height:32px; }
+  table.resizable tbody tr.sub-opcion:hover{ background:#f7ecd9 !important; }
+  tr.sub-opcion td{ font-size:12px; border-bottom:1px dashed #e2ded3; }
+  tr.sub-opcion td.sub-nombre{ padding-left:26px; color:var(--ink-soft); }
+  .costo-barato{ color:var(--good); font-weight:800; }
+  .precio-cu{ display:block; font-size:10.5px; font-weight:600; color:var(--ink-soft); line-height:1.1; }
+  .costo-barato .precio-cu{ color:var(--good); }
   .sel-bar{
     display:none; align-items:center; gap:12px; background:var(--ink); color:#fff; padding:9px 14px;
     border-radius:8px; margin-bottom:12px; font-size:13.5px;
@@ -439,6 +447,7 @@ let dashExpandido = false;
 function toggleDash(){ dashExpandido = !dashExpandido; render(); }
 let stockSubTab = 'control'; // 'productos' (el maestro) o 'control' (todas las listas de precios)
 let stockSeleccionados = new Set();
+let maestrosDesplegados = new Set(); // productos agrupados abiertos en Control de stock
 let arrastrandoSeleccion = false;
 let modoArrastre = 'agregar';
 let openPedidoIds = new Set();
@@ -1178,6 +1187,64 @@ function renderMisProductos(){
   return html;
 }
 
+/* ---- Unidades que trae el precio ----
+   Muchas listas cotizan por caja/bolsa/blister. La cantidad se toma de:
+   1) lo cargado a mano en el producto (p.unidadesPorPrecio), o si no
+   2) lo que dice claramente la descripción ("x 25 uni", "Caja x 250uni", "x 50U",
+      "bolsa 1000 unid"). Las "x" de medidas ("3/4 x 10 CM") no cuentan, ni "x 21PZ"
+      (un juego se vende entero). La columna UM no se usa: cada proveedor la usa distinto. */
+const RE_UNIDADES = /(?:\bx\s*|\b(?:caja|cja|bolsa|blister|blist|pack|paq|paquete|envase|sobre)\.?\s*(?:x|de|por)?\s*)(\d{1,5})\s*(?:u|un|uni|unid|unidades|uds?)(?![a-zñ])\.?/i;
+function unidadesDetectadas(nombre){
+  const m = String(nombre||'').match(RE_UNIDADES);
+  if(!m) return null;
+  const n = Number(m[1]);
+  return (n > 1 && n <= 10000) ? n : null;
+}
+function unidadesInfo(p){
+  const manual = Number(p && p.unidadesPorPrecio);
+  if(manual >= 1) return { n: manual, origen: 'cargado a mano' };
+  const det = unidadesDetectadas(p && p.nombre);
+  if(det) return { n: det, origen: 'detectado en la descripción' };
+  return { n: 1, origen: '' };
+}
+function unidadesDe(p){ return unidadesInfo(p).n; }
+function costoPorUnidad(p){ return (Number(p.costo)||0) / unidadesDe(p); }
+// Costo para mostrar en tabla: si trae varias unidades, abajo el precio por unidad
+function htmlCostoConUnidad(p, costo){
+  const n = unidadesDe(p);
+  return n > 1 ? `${money(costo)}<span class="precio-cu" title="Trae ${n} unidades">${money(costo / n)} c/u (x${n})</span>` : money(costo);
+}
+
+/* Filas de cada proveedor de un producto agrupado, para comparar costos (de más barato a más caro) */
+function filasOpcionesMaestro(p){
+  // Se compara por costo por unidad (una caja de 25 contra una unidad suelta)
+  const ops = p.opciones.slice().sort((a,b)=>costoPorUnidad(a)-costoPorUnidad(b));
+  const tonos = tonosProveedoresDe(p.id);
+  const minCosto = ops.length > 1 ? Math.min(...ops.map(costoPorUnidad)) : null;
+  return ops.map(o=>{
+    const costo = Number(o.costo)||0;
+    const cu = costoPorUnidad(o);
+    const veces = Number(o.vecesRecibido)||0;
+    const sel = o.id === selectedProductId;
+    return `<tr class="sub-opcion" data-id="${o.id}" onclick="selectProducto('${o.id}')" style="cursor:pointer; ${sel?'background:#faf0e8 !important;':''}">
+      <td></td><td></td>
+      <td data-label="Proveedor" class="cell-trunc" title="${esc(o.proveedor||'')}"><span class="${claseTonoProveedor(tonos, o.id)}">${esc(o.proveedor||'—')}</span></td>
+      <td data-label="Código" class="mono cell-trunc">${o.codigo?esc(o.codigo):'—'}</td>
+      <td data-label="Rubro" class="cell-trunc">${o.categoria?esc(o.categoria):'—'}</td>
+      <td data-label="UM" class="cell-trunc">${o.presentacion?esc(o.presentacion):'UN'}</td>
+      <td data-label="Producto" class="cell-trunc sub-nombre" title="${esc(o.nombre)}">↳ ${esc(o.nombre)}</td>
+      <td data-label="Costo" class="price cell-trunc">${minCosto !== null && cu === minCosto ? `<span class="costo-barato" title="El costo por unidad más barato de este producto">${htmlCostoConUnidad(o, costo)}</span>` : htmlCostoConUnidad(o, costo)}</td>
+      <td data-label="Pedidos" style="color:var(--ink-soft);">${veces>0 ? `pedido ${veces} vez(es)` : 'sin pedidos'}</td>
+      <td data-label="">
+        <div class="row-actions" onclick="event.stopPropagation()">
+          <button class="icon-btn" title="Editar" onclick="openProductoModal('${o.id}')">✎</button>
+          <button class="icon-btn" title="Registrar faltante a este proveedor" onclick="openFaltanteModal('${o.id}')">🛒</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
 /* ---- Selección múltiple (para unir varios en un maestro de una sola vez) ---- */
 function iniciarSeleccionDrag(id, ev){
   arrastrandoSeleccion = true;
@@ -1371,8 +1438,8 @@ function renderStock(){
         <td data-label="Código" class="mono cell-trunc">${p.codigo?esc(p.codigo):'—'}</td>
         <td data-label="Rubro" class="cell-trunc">${p.categoria?esc(p.categoria):'—'}</td>
         <td data-label="UM" class="cell-trunc">${p.presentacion?esc(p.presentacion):'UN'}</td>
-        <td data-label="Producto" class="cell-trunc" title="${esc(p.nombre)}">${p.esMaestro ? `<span title="Agrupa ${p.opciones.length} opción(es) de proveedor" style="margin-right:3px;">🔗</span>` : ''}${esc(p.nombre)}</td>
-        <td data-label="Costo" class="price cell-trunc">${money(p.costo)}</td>
+        <td data-label="Producto" class="cell-trunc" title="${esc(p.nombre)}">${p.esMaestro ? `<span style="display:inline-block; width:12px; color:var(--ink-soft);">${maestrosDesplegados.has(p.id)?'▾':'▸'}</span><span title="Agrupa ${p.opciones.length} opción(es) de proveedor" style="margin-right:3px;">🔗</span>` : ''}${esc(p.nombre)}</td>
+        <td data-label="Costo" class="price cell-trunc">${p.esMaestro ? money(p.costo) : htmlCostoConUnidad(p, Number(p.costo)||0)}</td>
         <td data-label="Stock">
           <div class="stock-adjust" onclick="event.stopPropagation()">
             <button type="button" class="qty-btn" title="Restar 1" onclick="${p.esMaestro?`adjustStockMaestro('${p.id}', -1)`:`adjustStock('${p.id}', -1)`}">−</button>
@@ -1395,6 +1462,7 @@ function renderStock(){
           </div>
         </td>
       </tr>`;
+      if(p.esMaestro && maestrosDesplegados.has(p.id)) html += filasOpcionesMaestro(p);
     }
     html += `</tbody></table></div>`;
   }
@@ -1427,7 +1495,7 @@ function startColResize(e, key){
 }
 
 function renderPriceDetailMaestro(m){
-  const ops = opcionesDelMaestro(m.id).slice().sort((a,b)=>(Number(a.costo)||0)-(Number(b.costo)||0));
+  const ops = opcionesDelMaestro(m.id).slice().sort((a,b)=>costoPorUnidad(a)-costoPorUnidad(b));
   const venta = Number(m.venta)||0;
   const masPedida = opcionMasPedidaDe(m.id);
   const tonos = tonosProveedoresDe(m.id);
@@ -1440,13 +1508,13 @@ function renderPriceDetailMaestro(m){
     <div class="pd-breakdown">
       ${ops.map(o=>{
         const costo = Number(o.costo)||0;
-        const margen = venta>0 ? ((venta-costo)/venta*100) : null;
+        const margen = venta>0 ? ((venta-costoPorUnidad(o))/venta*100) : null; // precio propio vs costo por unidad
         const veces = Number(o.vecesRecibido)||0;
         const esRef = masPedida && masPedida.id === o.id;
         const antes = Number(o.costoAnterior);
         const subio = antes > 0 && costo > antes;
         const aviso = subio ? ` <span title="Antes ${money(antes)}" style="color:var(--danger);">▲${(((costo-antes)/antes)*100).toFixed(0)}%</span>` : '';
-        return `<div class="pd-row"><span><span class="${claseTonoProveedor(tonos, o.id)}">${esRef?'★ ':''}${esc(o.proveedor||'—')}</span> <span style="color:var(--ink-soft);">(${esc(o.codigo||'—')}${veces>0?` · pedido ${veces} vez(es)`:''})</span></span><span class="mono">${money(costo)}${aviso}${margen!=null?` · margen ${margen.toFixed(0)}%`:''}</span></div>`;
+        return `<div class="pd-row"><span><span class="${claseTonoProveedor(tonos, o.id)}">${esRef?'★ ':''}${esc(o.proveedor||'—')}</span> <span style="color:var(--ink-soft);">(${esc(o.codigo||'—')}${veces>0?` · pedido ${veces} vez(es)`:''})</span></span><span class="mono">${money(costo)}${unidadesDe(o) > 1 ? ` (${money(costoPorUnidad(o))} c/u x${unidadesDe(o)})` : ''}${aviso}${margen!=null?` · margen ${margen.toFixed(0)}%`:''}</span></div>`;
       }).join('')}
     </div>` : ''}
   </div>`;
@@ -1467,6 +1535,7 @@ function renderPriceDetail(){
   const costo = Number(p.costo) || 0;
   const venta = Number(p.venta) || 0;
   const descuentoMonto = precioLista - costo;
+  const uInfo = unidadesInfo(p);
 
   // Desglose paso a paso: costo -> ganancia individual -> IVA global -> recargo tarjeta global -> venta final
   let gananciaBase = costo, ivaMonto = 0, tarjetaMonto = 0, gananciaMonto = venta - costo;
@@ -1491,12 +1560,14 @@ function renderPriceDetail(){
   return `<div class="price-detail">
     <div class="pd-title" title="${esc(p.nombre)}">${esc(p.nombre)}</div>
     <div class="pd-price-big" style="${estiloPrecioGrande(money(venta) + (flecha ? ' ▲' : ''))}">${money(venta)} ${flecha}</div>
+    ${uInfo.n > 1 ? `<div style="font-size:14px; font-weight:700; margin:-4px 0 10px 0;">${money(venta / uInfo.n)} por unidad <span style="font-weight:400; color:var(--ink-soft); font-size:12px;">(trae ${uInfo.n}, ${uInfo.origen})</span></div>` : ''}
     <button class="btn secondary small" style="width:100%;" onclick="toggleDetalle()">${detalleExpandido ? 'Ocultar detalle ▴' : 'Ver detalle ▾'}</button>
     ${detalleExpandido ? `
     <div class="pd-breakdown">
       <div class="pd-row"><span>Precio de lista</span><span class="mono">${money(precioLista)}</span></div>
       <div class="pd-row"><span>Descuento${descuentoPct!=null?` (${descuentoPct})`:''}</span><span class="mono">−${money(descuentoMonto)}</span></div>
       <div class="pd-row total"><span>Costo</span><span class="mono">${money(costo)}</span></div>
+      ${uInfo.n > 1 ? `<div class="pd-row"><span>Costo por unidad (÷${uInfo.n})</span><span class="mono">${money(costo / uInfo.n)}</span></div>` : ''}
       <div class="pd-row"><span>Ganancia${gananciaPct!=null?` (${gananciaPct})`:''}</span><span class="mono">+${money(gananciaMonto)}</span></div>
       ${Number(globalPctIva) ? `<div class="pd-row"><span>IVA (${globalPctIva}%)</span><span class="mono">+${money(ivaMonto)}</span></div>` : ''}
       ${Number(globalPctTarjeta) ? `<div class="pd-row"><span>Recargo tarjeta (${globalPctTarjeta}%)</span><span class="mono">+${money(tarjetaMonto)}</span></div>` : ''}
@@ -1512,11 +1583,22 @@ function toggleDetalle(){
 }
 
 function selectProducto(id){
+  // En Control de stock, tocar un producto agrupado despliega/cierra sus proveedores debajo
+  if(currentTab === 'stock' && stockSubTab === 'control' && maestros.some(m=>m.id===id)){
+    if(maestrosDesplegados.has(id)){ maestrosDesplegados.delete(id); if(selectedProductId === id) selectedProductId = null; }
+    else { maestrosDesplegados.add(id); selectedProductId = id; }
+    render();
+    return;
+  }
   selectedProductId = (selectedProductId === id) ? null : id;
 
   const rows = document.querySelectorAll('table.resizable tbody tr[data-id]');
   if(rows.length){
-    rows.forEach(tr=>{ tr.style.background = (tr.dataset.id === selectedProductId) ? '#faf0e8' : ''; });
+    rows.forEach(tr=>{
+      const bg = (tr.dataset.id === selectedProductId) ? '#faf0e8' : '';
+      if(tr.classList.contains('sub-opcion')){ if(bg) tr.style.setProperty('background', bg, 'important'); else tr.style.removeProperty('background'); }
+      else tr.style.background = bg;
+    });
     const panel = document.getElementById('priceDetailPanel');
     if(panel) panel.innerHTML = renderPriceDetail();
     else render();
@@ -1602,8 +1684,9 @@ function costoReferenciaMaestro(maestroId){
   const ops = opcionesDelMaestro(maestroId);
   if(ops.length === 0) return 0;
   const masPedida = opcionMasPedidaDe(maestroId);
-  if(masPedida) return Number(masPedida.costo)||0;
-  return ops.reduce((a,p)=>a+(Number(p.costo)||0),0) / ops.length;
+  // Por unidad: el stock y el precio de venta del maestro son por unidad
+  if(masPedida) return costoPorUnidad(masPedida);
+  return ops.reduce((a,p)=>a+costoPorUnidad(p),0) / ops.length;
 }
 
 // Aviso de aumento: compara el costo actual de cada opción de proveedor contra el
@@ -2186,6 +2269,10 @@ function openProductoModal(id){
         <div class="field"><label>Proveedor habitual</label><input id="f_proveedor" list="prov_datalist" type="text" value="${editing?esc(editing.proveedor||''):''}" placeholder="Opcional"></div>
         <div class="field"><label>¿Cómo viene?</label><input id="f_presentacion" list="pres_datalist" type="text" value="${editing?esc(editing.presentacion||''):''}" placeholder="Unidad, docena, gruesa..."></div>
       </div>
+      <div class="field"><label>Unidades que trae este precio (caja, bolsa, blister…)</label>
+        <input id="f_unidades" type="number" min="1" step="1" value="${editing && Number(editing.unidadesPorPrecio) >= 1 ? Number(editing.unidadesPorPrecio) : ''}" placeholder="${editing && unidadesDetectadas(editing.nombre) ? `Vacío = ${unidadesDetectadas(editing.nombre)} (detectado en la descripción)` : 'Vacío = 1 (precio por unidad)'}">
+        <div class="meta" style="color:var(--ink-soft); font-size:11.5px; margin-top:3px;">Se usa para mostrar el precio por unidad y comparar proveedores. Poné 1 si el precio ya es por unidad aunque la descripción diga otra cosa.</div>
+      </div>
       <datalist id="prov_datalist">${proveedores.map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
       <datalist id="pres_datalist">
         <option value="Unidad"><option value="Docena"><option value="Media docena"><option value="Gruesa">
@@ -2222,6 +2309,8 @@ function saveProducto(id){
     proveedorId: provMatch ? provMatch.id : null,
     presentacion: document.getElementById('f_presentacion').value.trim(),
   };
+  const unidadesTxt = document.getElementById('f_unidades').value.trim();
+  const unidadesManual = Math.round(Number(unidadesTxt));
   const ventaBajoCosto = data.venta < data.costo && data.costo > 0;
 
   if(id){
@@ -2232,8 +2321,10 @@ function saveProducto(id){
     // las ventas reales se registran solas desde la tabla de Stock (número directo o +/-).
     Object.assign(p, data);
     p.ventaAnterior = ventaVieja;
+    if(unidadesTxt !== '' && unidadesManual >= 1) p.unidadesPorPrecio = unidadesManual;
+    else delete p.unidadesPorPrecio;
   }else{
-    productos.push({ id: uid(), ...data });
+    productos.push({ id: uid(), ...data, ...(unidadesTxt !== '' && unidadesManual >= 1 ? { unidadesPorPrecio: unidadesManual } : {}) });
     currentTab = 'stock';
   }
   saveProductos();
