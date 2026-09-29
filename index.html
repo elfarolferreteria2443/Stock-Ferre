@@ -308,7 +308,8 @@
   .metric-stat:last-child{ border-bottom:none; }
   .metric-stat-lbl{ color:var(--ink-soft); }
   .metric-stat-val{ font-family:ui-monospace, 'Consolas', 'Liberation Mono', monospace; font-weight:600; text-align:right; }
-  .prov-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:start; }
+  .prov-grid{ display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; align-items:start; }
+  @media (max-width:1100px){ .prov-grid{ grid-template-columns:1fr 1fr; } }
   @media (max-width:800px){ .prov-grid{ grid-template-columns:1fr; } }
   .prov-card{
     background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:11px 16px;
@@ -441,8 +442,11 @@ let ventasResumenVisible = true;
 let ventasFiltroMes = '';
 let ventasFiltroAnio = '';
 let metricasSortBy = 'comprado';
-const PRODUCTO_MAX_WIDTH = 420;
-let colWidths = { pedidoEstado:36, codigo:85, rubro:70, um:55, producto:420, costo:95, proveedor:95, stock:128, acciones:150 };
+// Anchos iniciales = lo que ocupa el título de cada columna. "Producto" no tiene ancho fijo:
+// se queda con todo el espacio que sobra.
+const COL_WIDTHS_VERSION = 2;
+const COL_WIDTHS_ANGOSTAS = { proveedor:118, codigo:92, rubro:86, um:50 };
+let colWidths = { pedidoEstado:36, ...COL_WIDTHS_ANGOSTAS, costo:95, stock:128, acciones:150 };
 let globalPctTarjeta = 0;
 let globalPctIva = 0;
 let configStockBajoDefault = 0;
@@ -558,7 +562,9 @@ async function loadAll(){
   // Asegura un mínimo para que los botones nuevos no se amontonen, aunque el usuario tenga guardado un ancho viejo más chico
   if((Number(colWidths.acciones)||0) < 150) colWidths.acciones = 150;
   if((Number(colWidths.stock)||0) < 128) colWidths.stock = 128;
-  if(colWidths.producto > PRODUCTO_MAX_WIDTH) colWidths.producto = PRODUCTO_MAX_WIDTH;
+  // Una sola vez: los anchos guardados de antes (más anchos) vuelven a los nuevos por defecto
+  if(colWidths._v !== COL_WIDTHS_VERSION){ Object.assign(colWidths, COL_WIDTHS_ANGOSTAS); colWidths._v = COL_WIDTHS_VERSION; }
+  delete colWidths.producto;
   try{ const v = await fbGet('globalPct'); if(v){ globalPctTarjeta = Number(v.tarjeta)||0; globalPctIva = Number(v.iva)||0; } }catch(e){ /* usa 0 por defecto */ }
   try{ const v = await fbGet('configuracion'); if(v){ configStockBajoDefault = Number(v.stockBajoDefault)||0; configRedondeoStep = Number(v.redondeoStep)||1; configWhatsappModo = v.whatsappModo === 'escritorio' ? 'escritorio' : 'web'; configCuentaGmail = v.cuentaGmail || ''; } }catch(e){ /* usa los valores por defecto */ }
   render();
@@ -1308,7 +1314,9 @@ function renderStock(){
       <div>Probá con otra búsqueda o categoría.</div></div>`;
   }else{
     const cw = colWidths;
-    html += `<div class="table-scroll"><table class="resizable">
+    // "Producto" se queda con el espacio que sobra, pero nunca menos de 300px
+    const anchoFijo = 30 + ['pedidoEstado','proveedor','codigo','rubro','um','costo','stock','acciones'].reduce((t,k)=>t + (Number(cw[k])||0), 0);
+    html += `<div class="table-scroll"><table class="resizable" style="min-width:${anchoFijo + 300}px;">
       <colgroup>
         <col data-col="sel" style="width:30px;">
         <col data-col="pedidoEstado" style="width:${cw.pedidoEstado}px;">
@@ -1316,7 +1324,7 @@ function renderStock(){
         <col data-col="codigo" style="width:${cw.codigo}px;">
         <col data-col="rubro" style="width:${cw.rubro}px;">
         <col data-col="um" style="width:${cw.um}px;">
-        <col data-col="producto" style="width:${cw.producto}px;">
+        <col data-col="producto">
         <col data-col="costo" style="width:${cw.costo}px;">
         <col data-col="stock" style="width:${cw.stock}px;">
         <col data-col="acciones" style="width:${cw.acciones}px;">
@@ -1328,7 +1336,7 @@ function renderStock(){
       <th class="cell-trunc th-sort" onclick="sortStockColumn('codigo')">Código${flechaOrden('codigo')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'codigo')"></span></th>
       <th class="cell-trunc th-sort" onclick="sortStockColumn('rubro')">Rubro${flechaOrden('rubro')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'rubro')"></span></th>
       <th class="cell-trunc">UM<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'um')"></span></th>
-      <th class="cell-trunc th-sort" onclick="sortStockColumn('producto')">Producto${flechaOrden('producto')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'producto')"></span></th>
+      <th class="cell-trunc th-sort" onclick="sortStockColumn('producto')">Producto${flechaOrden('producto')}</th>
       <th class="cell-trunc th-sort" onclick="sortStockColumn('costo')">Costo${flechaOrden('costo')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'costo')"></span></th>
       <th class="cell-trunc th-sort" onclick="sortStockColumn('stock')">Stock${flechaOrden('stock')}<span class="col-resizer" onclick="event.stopPropagation()" onmousedown="startColResize(event,'stock')"></span></th>
       <th></th>
@@ -1397,7 +1405,6 @@ function startColResize(e, key){
   function onMove(ev){
     const delta = ev.clientX - startX;
     let newWidth = Math.max(40, startWidth + delta);
-    if(key === 'producto') newWidth = Math.min(newWidth, PRODUCTO_MAX_WIDTH);
     col.style.width = newWidth + 'px';
     colWidths[key] = newWidth;
   }
@@ -2832,13 +2839,9 @@ function toggleProveedorCard(prId){
   const yaEstaba = proveedoresExpandidos.has(prId);
   if(yaEstaba) proveedoresExpandidos.delete(prId);
   else proveedoresExpandidos.add(prId);
+  const y = window.scrollY; // abrir/cerrar no mueve la pantalla
   render();
-  if(!yaEstaba && proveedoresExpandidos.size === 1){
-    setTimeout(()=>{
-      const el = document.querySelector(`.prov-card[data-prov-id="${prId}"]`);
-      if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
-    }, 50);
-  }
+  window.scrollTo(0, y);
 }
 
 function updateProveedorPct(provId, field, idx, value){
@@ -3110,13 +3113,9 @@ function toggleCuentaCard(prId){
   const yaEstaba = cuentasExpandidas.has(prId);
   if(yaEstaba) cuentasExpandidas.delete(prId);
   else cuentasExpandidas.add(prId);
+  const y = window.scrollY; // abrir/cerrar no mueve la pantalla
   render();
-  if(!yaEstaba && cuentasExpandidas.size === 1){
-    setTimeout(()=>{
-      const el = document.querySelector(`.metric-card[data-prov-cuenta="${prId}"]`);
-      if(el) el.scrollIntoView({behavior:'smooth', block:'start'});
-    }, 50);
-  }
+  window.scrollTo(0, y);
 }
 
 function toggleCuentasResumen(){
