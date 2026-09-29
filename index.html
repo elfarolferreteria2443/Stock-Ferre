@@ -107,6 +107,10 @@
   tr.sub-opcion td{ font-size:12px; border-bottom:1px dashed #e2ded3; }
   tr.sub-opcion td.sub-nombre{ padding-left:26px; color:var(--ink-soft); }
   .costo-barato{ color:var(--good); font-weight:800; }
+  /* Arrastrar un producto suelto sobre un producto agrupado */
+  tr[draggable="true"]{ cursor:grab; }
+  tr.arrastrando{ opacity:.45; }
+  table.resizable tbody tr.drop-grupo{ outline:2px dashed var(--accent); outline-offset:-2px; background:#fbecd0 !important; }
   .precio-cu{ display:block; font-size:10.5px; font-weight:600; color:var(--ink-soft); line-height:1.1; }
   .costo-barato .precio-cu{ color:var(--good); }
   .sel-bar{
@@ -1215,6 +1219,104 @@ function htmlCostoConUnidad(p, costo){
   return n > 1 ? `${money(costo)}<span class="precio-cu" title="Trae ${n} unidades">${money(costo / n)} c/u (x${n})</span>` : money(costo);
 }
 
+/* ---- Arrastrar un producto suelto dentro de un producto agrupado (Control de stock) ---- */
+let productoArrastrado = null;
+function iniciarArrastreProducto(ev, id){
+  productoArrastrado = id;
+  ev.dataTransfer.effectAllowed = 'move';
+  try{ ev.dataTransfer.setData('text/plain', id); }catch(e){}
+  const tr = ev.currentTarget; if(tr) setTimeout(()=>tr.classList.add('arrastrando'), 0);
+}
+function finArrastreProducto(){
+  productoArrastrado = null;
+  document.querySelectorAll('tr.arrastrando, tr.drop-grupo').forEach(tr=>tr.classList.remove('arrastrando','drop-grupo'));
+}
+function filasDelGrupo(maestroId){
+  return document.querySelectorAll(`tr[data-id="${maestroId}"], tr.sub-opcion[ondrop*="'${maestroId}'"]`);
+}
+function arrastreSobreGrupo(ev, maestroId){
+  if(!productoArrastrado) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('tr.drop-grupo').forEach(tr=>tr.classList.remove('drop-grupo'));
+  filasDelGrupo(maestroId).forEach(tr=>tr.classList.add('drop-grupo'));
+}
+function arrastreFueraDeGrupo(ev){
+  const hacia = ev.relatedTarget && ev.relatedTarget.closest ? ev.relatedTarget.closest('tr') : null;
+  if(hacia && hacia.ondrop) return; // sigue dentro de filas que reciben
+  document.querySelectorAll('tr.drop-grupo').forEach(tr=>tr.classList.remove('drop-grupo'));
+}
+function soltarEnGrupo(ev, maestroId){
+  if(!productoArrastrado) return;
+  ev.preventDefault();
+  const id = productoArrastrado;
+  finArrastreProducto();
+  const p = productos.find(x=>x.id===id);
+  const m = maestros.find(x=>x.id===maestroId);
+  if(!p || !m || p.maestroId) return;
+  document.getElementById('modalRoot').innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal">
+      <h3>Agregar al grupo</h3>
+      <div class="subtitle">🔗 ${esc(m.nombre)}</div>
+      ${filaUnidadesAgrupar(p, 'arr_u')}
+      ${AYUDA_UNIDADES}
+      ${Number(p.stock) ? `<div class="meta" style="font-size:12px; margin-bottom:8px;">Su stock (${Number(p.stock)}) se suma al stock del grupo.</div>` : ''}
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cancelar</button>
+        <button class="btn" onclick="confirmarSoltarEnGrupo('${p.id}','${m.id}')">Agregar</button>
+      </div>
+    </div>
+  </div>`;
+}
+function confirmarSoltarEnGrupo(productoId, maestroId){
+  const p = productos.find(x=>x.id===productoId);
+  const m = maestros.find(x=>x.id===maestroId);
+  if(!p || !m) return;
+  aplicarUnidadesAgrupar(p, 'arr_u');
+  m.stock = (Number(m.stock)||0) + (Number(p.stock)||0);
+  p.maestroId = m.id;
+  p.stock = 0;
+  stockSeleccionados.delete(p.id);
+  maestrosDesplegados.add(m.id); // queda abierto para ver cómo quedó la comparación
+  saveMaestros();
+  saveProductos();
+  closeModal();
+  render();
+  showToast(`Agregado a "${m.nombre}"`);
+}
+
+/* Renglón para elegir "dividir el precio por" de un producto al agruparlo en un maestro */
+function filaUnidadesAgrupar(p, inputId){
+  const n = unidadesDe(p);
+  const costo = Number(p.costo)||0;
+  return `<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px dashed var(--line); font-size:12.5px;">
+    <span style="flex:1; min-width:0; overflow-wrap:anywhere;"><b>${esc(p.proveedor||'sin proveedor')}</b> <span style="color:var(--ink-soft);">${esc(p.nombre)} · ${money(costo)}</span></span>
+    <span style="white-space:nowrap;">÷ <input id="${inputId}" type="number" min="1" step="1" value="${n}" style="width:62px; padding:3px 5px;" oninput="actualizarPrecioCU('${inputId}', ${costo})"></span>
+    <span id="${inputId}_cu" class="mono" style="white-space:nowrap; min-width:92px; text-align:right;">${money(costo / n)} c/u</span>
+  </div>`;
+}
+function actualizarPrecioCU(inputId, costo){
+  const n = Math.max(1, Math.round(Number(document.getElementById(inputId).value)||1));
+  const el = document.getElementById(inputId + '_cu');
+  if(el) el.textContent = `${money(costo / n)} c/u`;
+}
+// Guarda lo elegido en el renglón (siempre queda como "cargado a mano")
+function aplicarUnidadesAgrupar(p, inputId){
+  const el = document.getElementById(inputId);
+  if(!el) return;
+  const n = Math.round(Number(el.value));
+  if(n >= 1) p.unidadesPorPrecio = n;
+}
+function guardarUnidadesOpcion(productoId, inputId){
+  const p = productos.find(x=>x.id===productoId);
+  if(!p) return;
+  aplicarUnidadesAgrupar(p, inputId);
+  saveProductos();
+  showToast(`${p.proveedor||'Proveedor'}: precio dividido por ${unidadesDe(p)}`);
+}
+const AYUDA_UNIDADES = `<div class="meta" style="color:var(--ink-soft); font-size:11.5px; margin:2px 0 8px 0;">÷ = por cuántas unidades se divide el precio de ese proveedor (caja, bolsa, blister…). Poné 1 si ya es precio por unidad.</div>`;
+
 /* Filas de cada proveedor de un producto agrupado, para comparar costos (de más barato a más caro) */
 function filasOpcionesMaestro(p){
   // Se compara por costo por unidad (una caja de 25 contra una unidad suelta)
@@ -1226,7 +1328,7 @@ function filasOpcionesMaestro(p){
     const cu = costoPorUnidad(o);
     const veces = Number(o.vecesRecibido)||0;
     const sel = o.id === selectedProductId;
-    return `<tr class="sub-opcion" data-id="${o.id}" onclick="selectProducto('${o.id}')" style="cursor:pointer; ${sel?'background:#faf0e8 !important;':''}">
+    return `<tr class="sub-opcion" data-id="${o.id}" ondragover="arrastreSobreGrupo(event,'${p.id}')" ondragleave="arrastreFueraDeGrupo(event)" ondrop="soltarEnGrupo(event,'${p.id}')" onclick="selectProducto('${o.id}')" style="cursor:pointer; ${sel?'background:#faf0e8 !important;':''}">
       <td></td><td></td>
       <td data-label="Proveedor" class="cell-trunc" title="${esc(o.proveedor||'')}"><span class="${claseTonoProveedor(tonos, o.id)}">${esc(o.proveedor||'—')}</span></td>
       <td data-label="Código" class="mono cell-trunc">${o.codigo?esc(o.codigo):'—'}</td>
@@ -1289,7 +1391,9 @@ function abrirUnirSeleccionadosModal(){
   <div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
       <h3>Unir ${items.length} productos en un maestro</h3>
-      <div class="subtitle">${items.map(p=>esc(p.nombre + ' — ' + (p.proveedor||'sin proveedor'))).join('<br>')}</div>
+      <div class="step-label">Precio de cada proveedor</div>
+      ${items.map(p=>filaUnidadesAgrupar(p, 'unir_u_' + p.id)).join('')}
+      ${AYUDA_UNIDADES}
       <div class="field"><label>Nombre del producto (el que vas a usar vos)</label><input id="unir_nombre" type="text" value="${esc(items[0].nombre)}"></div>
       <div class="field-row">
         <div class="field"><label>Código interno (opcional)</label><input id="unir_codigo" type="text" placeholder="Tu código"></div>
@@ -1318,7 +1422,7 @@ function confirmarUnirSeleccionados(){
     categoria: items[0].categoria || '', presentacion: items[0].presentacion || '',
   };
   maestros.push(maestro);
-  items.forEach(p => { p.maestroId = maestro.id; p.stock = 0; });
+  items.forEach(p => { aplicarUnidadesAgrupar(p, 'unir_u_' + p.id); p.maestroId = maestro.id; p.stock = 0; });
   stockSeleccionados.clear();
   saveMaestros();
   saveProductos();
@@ -1423,7 +1527,10 @@ function renderStock(){
       const sel = p.id === selectedProductId;
       const idsIndicador = p.esMaestro ? p.opciones.map(o=>o.id) : [p.id];
       const marcado = stockSeleccionados.has(p.id);
-      html += `<tr data-id="${p.id}" onclick="selectProducto('${p.id}')" class="${marcado?'row-selected':''}" style="cursor:pointer; ${sel?'background:#faf0e8;':''}">
+      const dragAttrs = p.esMaestro
+        ? `ondragover="arrastreSobreGrupo(event,'${p.id}')" ondragleave="arrastreFueraDeGrupo(event)" ondrop="soltarEnGrupo(event,'${p.id}')"`
+        : `draggable="true" ondragstart="iniciarArrastreProducto(event,'${p.id}')" ondragend="finArrastreProducto()"`;
+      html += `<tr data-id="${p.id}" ${dragAttrs} onclick="selectProducto('${p.id}')" class="${marcado?'row-selected':''}" style="cursor:pointer; ${sel?'background:#faf0e8;':''}">
         <td data-label="" style="text-align:center; ${p.esMaestro?'':'cursor:pointer;'}" onclick="event.stopPropagation()" ${p.esMaestro?'':`onmousedown="iniciarSeleccionDrag('${p.id}', event)" onmouseenter="arrastrarSobre('${p.id}')"`}>
           ${p.esMaestro ? '' : `<span class="sel-box ${marcado?'checked':''}"></span>`}
         </td>
@@ -1972,7 +2079,8 @@ function openVincularModal(productoId){
   <div class="overlay" onclick="if(event.target===this) closeModal()">
     <div class="modal">
       <h3>Vincular a un maestro</h3>
-      <div class="subtitle">${esc(p.nombre)} — ${esc(p.proveedor||'sin proveedor')}</div>
+      ${filaUnidadesAgrupar(p, 'vinc_u')}
+      ${AYUDA_UNIDADES}
 
       <div class="step-label">Crear una agrupación nueva</div>
       <div class="field"><label>Nombre del producto (el que vas a usar vos)</label><input id="vinc_nombre" type="text" value="${esc(p.nombre)}"></div>
@@ -2013,6 +2121,7 @@ function crearMaestroDesde(productoId){
     presentacion: p.presentacion || '',
   };
   maestros.push(maestro);
+  aplicarUnidadesAgrupar(p, 'vinc_u');
   p.maestroId = maestro.id;
   p.stock = 0;
   saveMaestros();
@@ -2030,6 +2139,7 @@ function agregarAMaestroExistente(productoId){
   const m = maestros.find(x=>x.id===maestroId);
   if(!m) return;
   m.stock = (Number(m.stock)||0) + (Number(p.stock)||0);
+  aplicarUnidadesAgrupar(p, 'vinc_u');
   p.maestroId = m.id;
   p.stock = 0;
   saveMaestros();
@@ -2066,12 +2176,16 @@ function openMaestroModal(maestroId){
         const antes = Number(o.costoAnterior);
         const subio = antes > 0 && Number(o.costo) > antes;
         const aviso = subio ? ` <span style="color:var(--danger);" title="Antes ${money(antes)}">▲ subió ${(((o.costo-antes)/antes)*100).toFixed(0)}%</span>` : '';
-        return `<div class="row-actions" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--line);">
-        <span><span class="${claseTonoProveedor(tonos, o.id)}">${esRef?'★ ':''}${esc(o.proveedor||'—')}</span> <span class="meta" style="color:var(--ink-soft); font-size:12px;">cód. ${esc(o.codigo||'—')} · costo ${money(o.costo)}${veces>0?` · pedido ${veces} vez(es)`:''}</span>${aviso}</span>
+        const n = unidadesDe(o);
+        const iid = 'mae_u_' + o.id;
+        return `<div class="row-actions" style="justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px dashed var(--line);">
+        <span style="flex:1; min-width:0;"><span class="${claseTonoProveedor(tonos, o.id)}">${esRef?'★ ':''}${esc(o.proveedor||'—')}</span> <span class="meta" style="color:var(--ink-soft); font-size:12px;">cód. ${esc(o.codigo||'—')} · costo ${money(o.costo)}${veces>0?` · pedido ${veces} vez(es)`:''}</span>${aviso}</span>
+        <span style="white-space:nowrap; font-size:12.5px;">÷ <input id="${iid}" type="number" min="1" step="1" value="${n}" style="width:62px; padding:3px 5px;" oninput="actualizarPrecioCU('${iid}', ${Number(o.costo)||0})" onchange="guardarUnidadesOpcion('${o.id}', '${iid}')"></span>
+        <span id="${iid}_cu" class="mono" style="white-space:nowrap; min-width:92px; text-align:right; font-size:12.5px;">${money((Number(o.costo)||0) / n)} c/u</span>
         <button class="icon-btn" title="Quitar de la agrupación" onclick="quitarOpcionDeMaestro('${o.id}')">🗑</button>
       </div>`;
       }).join(''); })()}
-      <div class="meta" style="color:var(--ink-soft); font-size:11.5px; margin:6px 0 0 0;">★ = proveedor al que más veces le pediste este producto (se usa su costo para el margen). Sin historial todavía, se usa el promedio.</div>
+      <div class="meta" style="color:var(--ink-soft); font-size:11.5px; margin:6px 0 0 0;">★ = proveedor al que más veces le pediste este producto (se usa su costo para el margen). Sin historial todavía, se usa el promedio. ÷ = por cuántas unidades se divide el precio de ese proveedor (se guarda al cambiarlo).</div>
 
       <div class="step-label">Agregar otra opción de proveedor</div>
       <div class="field"><input id="mae_buscar" type="text" placeholder="Buscar producto suelto por nombre o código..." oninput="renderMaestroBusqueda('${m.id}', this.value)"></div>
@@ -2092,6 +2206,8 @@ function guardarMaestro(maestroId){
   m.codigo = document.getElementById('mae_codigo').value.trim();
   m.venta = Math.max(0, Number(document.getElementById('mae_venta').value)||0);
   m.stockMin = Math.max(0, Math.round(Number(document.getElementById('mae_stockmin').value)||0));
+  opcionesDelMaestro(m.id).forEach(o => aplicarUnidadesAgrupar(o, 'mae_u_' + o.id));
+  saveProductos();
   saveMaestros();
   closeModal();
   render();
