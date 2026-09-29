@@ -113,16 +113,24 @@
     width:220px; flex-shrink:0; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
     padding:16px; box-shadow:var(--shadow);
   }
-  .pd-title{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-weight:700; font-size:17px; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .pd-price-big{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-weight:800; font-size:46px; color:var(--accent); margin-bottom:12px; line-height:1; }
+  .pd-title{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-weight:700; font-size:17px; margin-bottom:8px; text-transform:uppercase; letter-spacing:0.02em; overflow-wrap:anywhere; }
+  .pd-price-big{ font-family:ui-sans-serif, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; font-weight:800; font-size:46px; color:var(--accent); margin-bottom:12px; line-height:1; white-space:nowrap; }
+  .price-detail .btn{ white-space:normal; }
   .pd-breakdown{ margin-top:12px; }
   .pd-row{ display:flex; justify-content:space-between; gap:10px; padding:7px 0; border-bottom:1px dashed var(--line); font-size:13.5px; }
+  .pd-row > span{ min-width:0; overflow-wrap:anywhere; }
+  .pd-row > span.mono{ text-align:right; }
+  /* En "Mis productos" sobra espacio: el recuadro del precio es más ancho */
+  #priceDetailPanel.pd-ancho .price-detail{ width:380px; }
+  /* Proveedores de un producto agrupado: más oscuro = más veces pedido */
+  .prov-tono-1{ color:#000; font-weight:900; }
+  .prov-tono-2{ color:#111; font-weight:600; }
   .pd-row:last-child{ border-bottom:none; }
   .pd-row.total{ font-weight:700; border-bottom:1px solid var(--line); }
   .pd-empty{ color:var(--ink-soft); font-size:13.5px; text-align:center; padding:30px 6px; }
   @media (max-width:800px){
     .stock-layout{ flex-direction:column; }
-    .price-detail{ width:100%; }
+    .price-detail, #priceDetailPanel.pd-ancho .price-detail{ width:100%; }
   }
 
   button.btn, a.btn, label.btn{
@@ -1061,7 +1069,8 @@ function listaStockParaMostrar(){
   const idsConMaestro = new Set(productos.filter(p=>p.maestroId).map(p=>p.maestroId));
   const filasMaestro = maestros.filter(m => idsConMaestro.has(m.id)).map(m=>{
     const ops = opcionesDelMaestro(m.id);
-    const proveedoresOps = [...new Set(ops.map(o=>o.proveedor).filter(Boolean))];
+    const ordenPedidos = ops.slice().sort((a,b)=>(Number(b.vecesRecibido)||0)-(Number(a.vecesRecibido)||0));
+    const proveedoresOps = [...new Set(ordenPedidos.map(o=>o.proveedor).filter(Boolean))];
     return {
       id: m.id,
       esMaestro: true,
@@ -1164,7 +1173,7 @@ function renderMisProductos(){
     html += `</tbody></table></div>`;
   }
   html += `</div>`; // stock-main
-  html += `<div id="priceDetailPanel">${renderPriceDetail()}</div>`;
+  html += `<div id="priceDetailPanel" class="pd-ancho">${renderPriceDetail()}</div>`;
   html += `</div>`; // stock-layout
   return html;
 }
@@ -1421,9 +1430,10 @@ function renderPriceDetailMaestro(m){
   const ops = opcionesDelMaestro(m.id).slice().sort((a,b)=>(Number(a.costo)||0)-(Number(b.costo)||0));
   const venta = Number(m.venta)||0;
   const masPedida = opcionMasPedidaDe(m.id);
+  const tonos = tonosProveedoresDe(m.id);
   return `<div class="price-detail">
     <div class="pd-title" title="${esc(m.nombre)}">🔗 ${esc(m.nombre)}</div>
-    <div class="pd-price-big">${money(venta)}</div>
+    <div class="pd-price-big" style="${estiloPrecioGrande(money(venta))}">${money(venta)}</div>
     <div class="meta" style="color:var(--ink-soft); font-size:12px; margin-bottom:8px;">Precio propio, fijado por vos (no depende de un proveedor puntual). El costo de referencia es el del proveedor al que más veces le pediste este producto${!masPedida?' (todavía sin historial: se usa el promedio)':''}.</div>
     <button class="btn secondary small" style="width:100%;" onclick="toggleDetalle()">${detalleExpandido ? 'Ocultar opciones de proveedor ▴' : 'Ver opciones de proveedor ▾'}</button>
     ${detalleExpandido ? `
@@ -1436,7 +1446,7 @@ function renderPriceDetailMaestro(m){
         const antes = Number(o.costoAnterior);
         const subio = antes > 0 && costo > antes;
         const aviso = subio ? ` <span title="Antes ${money(antes)}" style="color:var(--danger);">▲${(((costo-antes)/antes)*100).toFixed(0)}%</span>` : '';
-        return `<div class="pd-row"><span>${esRef?'★ ':''}${esc(o.proveedor||'—')} <span style="color:var(--ink-soft);">(${esc(o.codigo||'—')}${veces>0?` · pedido ${veces} vez(es)`:''})</span></span><span class="mono">${money(costo)}${aviso}${margen!=null?` · margen ${margen.toFixed(0)}%`:''}</span></div>`;
+        return `<div class="pd-row"><span><span class="${claseTonoProveedor(tonos, o.id)}">${esRef?'★ ':''}${esc(o.proveedor||'—')}</span> <span style="color:var(--ink-soft);">(${esc(o.codigo||'—')}${veces>0?` · pedido ${veces} vez(es)`:''})</span></span><span class="mono">${money(costo)}${aviso}${margen!=null?` · margen ${margen.toFixed(0)}%`:''}</span></div>`;
       }).join('')}
     </div>` : ''}
   </div>`;
@@ -1480,7 +1490,7 @@ function renderPriceDetail(){
 
   return `<div class="price-detail">
     <div class="pd-title" title="${esc(p.nombre)}">${esc(p.nombre)}</div>
-    <div class="pd-price-big">${money(venta)} ${flecha}</div>
+    <div class="pd-price-big" style="${estiloPrecioGrande(money(venta) + (flecha ? ' ▲' : ''))}">${money(venta)} ${flecha}</div>
     <button class="btn secondary small" style="width:100%;" onclick="toggleDetalle()">${detalleExpandido ? 'Ocultar detalle ▴' : 'Ver detalle ▾'}</button>
     ${detalleExpandido ? `
     <div class="pd-breakdown">
@@ -1565,6 +1575,28 @@ function opcionMasPedidaDe(maestroId){
     if(veces > 0 && (!mejor || veces > (Number(mejor.vecesRecibido)||0))) mejor = o;
   }
   return mejor;
+}
+// Tono de letra de cada proveedor de un maestro según cuántas veces se le recibió
+// pedido: 1 = el más pedido (bien oscuro), 2 = el segundo, el resto letra común.
+function tonosProveedoresDe(maestroId){
+  const tonos = new Map();
+  opcionesDelMaestro(maestroId)
+    .filter(o => (Number(o.vecesRecibido)||0) > 0)
+    .sort((a,b) => (Number(b.vecesRecibido)||0) - (Number(a.vecesRecibido)||0))
+    .slice(0, 2)
+    .forEach((o,i) => tonos.set(o.id, i+1));
+  return tonos;
+}
+function claseTonoProveedor(tonos, opcionId){
+  const t = tonos.get(opcionId);
+  return t ? `prov-tono-${t}` : '';
+}
+// Tamaño de letra del precio grande para que entre en una sola línea del recuadro
+// (el recuadro de "Mis productos" es más ancho que el de "Control de stock").
+function estiloPrecioGrande(texto){
+  const ancho = stockSubTab === 'productos' ? 346 : 186;
+  const px = Math.max(18, Math.min(46, Math.floor(ancho / (String(texto).length * 0.62))));
+  return `font-size:${px}px;`;
 }
 function costoReferenciaMaestro(maestroId){
   const ops = opcionesDelMaestro(maestroId);
@@ -1945,14 +1977,14 @@ function openMaestroModal(maestroId){
       </div>
 
       <div class="step-label">Opciones de proveedor (${ops.length})</div>
-      ${(()=>{ const masPedida = opcionMasPedidaDe(m.id); return ops.map(o=>{
+      ${(()=>{ const masPedida = opcionMasPedidaDe(m.id); const tonos = tonosProveedoresDe(m.id); return ops.map(o=>{
         const veces = Number(o.vecesRecibido)||0;
         const esRef = masPedida && masPedida.id === o.id;
         const antes = Number(o.costoAnterior);
         const subio = antes > 0 && Number(o.costo) > antes;
         const aviso = subio ? ` <span style="color:var(--danger);" title="Antes ${money(antes)}">▲ subió ${(((o.costo-antes)/antes)*100).toFixed(0)}%</span>` : '';
         return `<div class="row-actions" style="justify-content:space-between; padding:6px 0; border-bottom:1px dashed var(--line);">
-        <span>${esRef?'★ ':''}${esc(o.proveedor||'—')} <span class="meta" style="color:var(--ink-soft); font-size:12px;">cód. ${esc(o.codigo||'—')} · costo ${money(o.costo)}${veces>0?` · pedido ${veces} vez(es)`:''}</span>${aviso}</span>
+        <span><span class="${claseTonoProveedor(tonos, o.id)}">${esRef?'★ ':''}${esc(o.proveedor||'—')}</span> <span class="meta" style="color:var(--ink-soft); font-size:12px;">cód. ${esc(o.codigo||'—')} · costo ${money(o.costo)}${veces>0?` · pedido ${veces} vez(es)`:''}</span>${aviso}</span>
         <button class="icon-btn" title="Quitar de la agrupación" onclick="quitarOpcionDeMaestro('${o.id}')">🗑</button>
       </div>`;
       }).join(''); })()}
