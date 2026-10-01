@@ -12,6 +12,13 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="El Farol">
+<script>
+// El login con Google solo anda en el dominio del authDomain (firebaseapp.com).
+// datos-ferreteria.web.app publica lo mismo, así que se lo manda directo allá.
+if(location.hostname === 'datos-ferreteria.web.app'){
+  location.replace('https://datos-ferreteria.firebaseapp.com' + location.pathname + location.search + location.hash);
+}
+</script>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
@@ -399,8 +406,15 @@
     <div style="color:var(--ink-soft); font-size:13.5px; margin-bottom:22px;">Iniciá sesión con tu cuenta de Google para entrar.</div>
     <button class="btn" style="width:100%;" onclick="iniciarSesionGoogle()">Iniciar sesión con Google</button>
     <div id="loginError" style="color:var(--danger); font-size:12.5px; margin-top:14px;"></div>
+    <div id="loginOtroDominio" style="display:none; color:var(--ink-soft); font-size:12.5px; margin-top:14px;">
+      Si el login se queda colgado, entrá desde
+      <a href="https://datos-ferreteria.firebaseapp.com/">datos-ferreteria.firebaseapp.com</a>.
+    </div>
   </div>
 </div>
+<script>
+if(location.hostname.endsWith('github.io')) document.getElementById('loginOtroDominio').style.display = '';
+</script>
 
 <div id="appRoot" style="display:none;">
 <header class="app-header">
@@ -1204,10 +1218,19 @@ function unidadesDetectadas(nombre){
   const n = Number(m[1]);
   return (n > 1 && n <= 10000) ? n : null;
 }
+// Proveedores marcados "cotiza siempre por unidad" (pr.cotizaPorUnidad): a sus
+// productos no se les busca la cantidad en la descripción (lo cargado a mano sí vale).
+function proveedorCotizaPorUnidad(p){
+  const pr = p && p.proveedorId ? proveedores.find(x=>x.id===p.proveedorId) : null;
+  return !!(pr && pr.cotizaPorUnidad);
+}
+function unidadesDetectadasDe(p){
+  return proveedorCotizaPorUnidad(p) ? null : unidadesDetectadas(p && p.nombre);
+}
 function unidadesInfo(p){
   const manual = Number(p && p.unidadesPorPrecio);
   if(manual >= 1) return { n: manual, origen: 'cargado a mano' };
-  const det = unidadesDetectadas(p && p.nombre);
+  const det = unidadesDetectadasDe(p);
   if(det) return { n: det, origen: 'detectado en la descripción' };
   return { n: 1, origen: '' };
 }
@@ -2386,7 +2409,7 @@ function openProductoModal(id){
         <div class="field"><label>¿Cómo viene?</label><input id="f_presentacion" list="pres_datalist" type="text" value="${editing?esc(editing.presentacion||''):''}" placeholder="Unidad, docena, gruesa..."></div>
       </div>
       <div class="field"><label>Unidades que trae este precio (caja, bolsa, blister…)</label>
-        <input id="f_unidades" type="number" min="1" step="1" value="${editing && Number(editing.unidadesPorPrecio) >= 1 ? Number(editing.unidadesPorPrecio) : ''}" placeholder="${editing && unidadesDetectadas(editing.nombre) ? `Vacío = ${unidadesDetectadas(editing.nombre)} (detectado en la descripción)` : 'Vacío = 1 (precio por unidad)'}">
+        <input id="f_unidades" type="number" min="1" step="1" value="${editing && Number(editing.unidadesPorPrecio) >= 1 ? Number(editing.unidadesPorPrecio) : ''}" placeholder="${editing && unidadesDetectadasDe(editing) ? `Vacío = ${unidadesDetectadasDe(editing)} (detectado en la descripción)` : 'Vacío = 1 (precio por unidad)'}">
         <div class="meta" style="color:var(--ink-soft); font-size:11.5px; margin-top:3px;">Se usa para mostrar el precio por unidad y comparar proveedores. Poné 1 si el precio ya es por unidad aunque la descripción diga otra cosa.</div>
       </div>
       <datalist id="prov_datalist">${proveedores.map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
@@ -3170,15 +3193,32 @@ function asignarRubroProveedor(prId, rubro){
   render();
 }
 
+// Stock que se le cuenta a cada producto de proveedor en Métricas. Un producto
+// agrupado tiene su stock en 0 (vive en el maestro, compartido): ese stock se le
+// cuenta a UNA sola opción para no sumarlo varias veces — la más pedida, o si
+// todavía no hay historial, la más barata por unidad.
+function opcionDuenaStockMaestro(maestroId){
+  const masPedida = opcionMasPedidaDe(maestroId);
+  if(masPedida) return masPedida;
+  const ops = opcionesDelMaestro(maestroId);
+  return ops.reduce((mejor,o)=> !mejor || costoPorUnidad(o) < costoPorUnidad(mejor) ? o : mejor, null);
+}
+function stockParaMetricasDe(p){
+  if(!maestroDe(p)) return Number(p.stock)||0;
+  const duena = opcionDuenaStockMaestro(p.maestroId);
+  return duena && duena.id === p.id ? stockActualDe(p) : 0;
+}
+
 function calcularMetricasProveedor(pr){
   const totalComprado = comprasDelProveedor(pr.id).reduce((acc,m)=> acc + (Number(m.monto)||0), 0);
   const articulos = productos.filter(p=>p.proveedorId === pr.id);
-  const valorStockActual = articulos.reduce((acc,p)=> acc + (Number(p.stock)||0)*(Number(p.costo)||0), 0);
+  // El stock se cuenta en unidades: se valoriza al costo por unidad
+  const valorStockActual = articulos.reduce((acc,p)=> acc + stockParaMetricasDe(p)*costoPorUnidad(p), 0);
   return {
     totalComprado,
     rubro: rubroDeProveedorId(pr.id),
     cantArticulos: articulos.length,
-    cantArticulosConStock: articulos.filter(p => (Number(p.stock)||0) > 0).length,
+    cantArticulosConStock: articulos.filter(p => stockParaMetricasDe(p) > 0).length,
     valorStockActual,
   };
 }
@@ -3641,6 +3681,14 @@ function openProveedorModal(id){
       <div class="field"><label>WhatsApp del proveedor</label><input id="pv_whatsapp" type="text" value="${editing?esc(editing.whatsapp||''):''}" placeholder="Ej: 11 2345 6789 (opcional)"></div>
       <div class="field"><label>Mail del proveedor</label><input id="pv_mail" type="text" value="${editing?esc(editing.mail||''):''}" placeholder="Ej: ventas@proveedor.com (para buscar listas en Gmail)"></div>
       <div class="field"><label>Contacto</label><input id="pv_contacto" type="text" value="${editing?esc(editing.contacto||''):''}" placeholder="Otro dato de contacto (opcional)"></div>
+      <div class="field">
+        <label>¿Cómo cotiza los precios?</label>
+        <select id="pv_cotiza">
+          <option value="" ${editing && editing.cotizaPorUnidad ? '' : 'selected'}>Automático: si la descripción dice "x 25 uni", "caja x 100"… el precio es por esa cantidad</option>
+          <option value="unidad" ${editing && editing.cotizaPorUnidad ? 'selected' : ''}>Siempre por unidad (no dividir aunque la descripción diga una cantidad)</option>
+        </select>
+        <div style="color:var(--ink-soft); font-size:12px; margin-top:4px;">Lo que cargues a mano en un producto ("Unidades que trae el precio") siempre manda.</div>
+      </div>
       <div class="modal-actions">
         <button class="btn secondary" onclick="closeModal()">Cancelar</button>
         <button class="btn" onclick="saveProveedor(${editing?`'${editing.id}'`:'null'})">Guardar</button>
@@ -3683,6 +3731,7 @@ function saveProveedor(id){
     whatsapp: document.getElementById('pv_whatsapp').value.trim(),
     mail: document.getElementById('pv_mail').value.trim(),
     contacto: document.getElementById('pv_contacto').value.trim(),
+    cotizaPorUnidad: document.getElementById('pv_cotiza').value === 'unidad',
   };
   let actualizadosPrecio = 0;
   if(id){
