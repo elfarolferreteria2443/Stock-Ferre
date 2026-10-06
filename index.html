@@ -4436,9 +4436,18 @@ async function cargarArchivoEnContexto(file){
     const buf = await file.arrayBuffer();
     const data = new Uint8Array(buf);
     const wb = leerLibroExcel(data);
-    const primeraHoja = wb.SheetNames[0];
-    const rows = extractRows(wb, primeraHoja);
-    if(!rows || rows.length < 1){
+    // La hoja con más filas con datos (a veces la primera está vacía o es una portada)
+    const conDatos = rs => (rs || []).filter(r => r.some(v => String(v ?? '').trim() !== '')).length;
+    let primeraHoja = wb.SheetNames[0], rows = null, mejor = -1;
+    for(const nombre of wb.SheetNames){
+      const rs = extractRows(wb, nombre);
+      const n = conDatos(rs);
+      if(n > mejor){ mejor = n; primeraHoja = nombre; rows = rs; }
+    }
+    if(!rows || mejor < 1){
+      guardarArchivoQueFallo(file, new Error('Se leyó pero no se encontraron filas con datos (hojas: ' + wb.SheetNames.join(', ') + ')'));
+      const cont = document.getElementById('im_mapping');
+      if(cont) cont.innerHTML = `<div class="global-pct-note" style="border-color:#c0392b;color:#c0392b;">Se abrió <b>${esc(file.name || 'el archivo')}</b> pero no se encontraron filas con datos. Se guardó una copia para revisarlo${loteActivo ? '. Por ahora tocá "Saltar este archivo"' : ''}.</div>`;
       showToast('No se encontraron filas en el archivo');
       return;
     }
