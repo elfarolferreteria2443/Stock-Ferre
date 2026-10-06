@@ -20,7 +20,7 @@ if(location.hostname === 'datos-ferreteria.web.app'){
 }
 </script>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -4267,6 +4267,127 @@ function extractRows(wb, sheetName){
   return XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
 }
 
+/* Rescate de Excel viejos (.xls) con el "contenedor" interno dañado.
+   Algunos sistemas de los proveedores generan .xls con el índice interno mal armado
+   (sectores fuera del archivo, directorio roto, archivo cortado). El lector común
+   (SheetJS) corta con errores como "Cannot set properties of undefined (setting 'name')".
+   Acá se busca a mano la parte con los datos ("Workbook"/"Book"), tolerando lo roto,
+   y se arma un .xls sano con ella para leerlo normal. */
+function rescatarXlsDaniado(bytes){
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const firma = [0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1];
+  if(u8.length < 512 || firma.some((b,i) => u8[i] !== b)) return null;
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const u16 = o => o + 2 <= u8.length ? dv.getUint16(o, true) : 0;
+  const u32 = o => o + 4 <= u8.length ? dv.getUint32(o, true) : 0xFFFFFFFF;
+  const shift = u16(0x1E);
+  const ssz = (shift === 9 || shift === 12) ? (1 << shift) : 512;
+  const totalSect = Math.ceil((u8.length - ssz) / ssz);
+  const sector = i => {
+    const out = new Uint8Array(ssz);
+    const ini = (i + 1) * ssz;
+    if(ini < u8.length) out.set(u8.subarray(ini, Math.min(ini + ssz, u8.length)));
+    return out;
+  };
+  const valido = i => i >= 0 && i < totalSect;
+  const FIN = 0xFFFFFFFA; // de acá para arriba: fin de cadena / libre / especial
+
+  // Tabla de sectores (FAT), salteando lo que apunte fuera del archivo
+  const fatSect = [];
+  for(let k = 0; k < 109; k++){ const s = u32(0x4C + k*4); if(s < FIN && valido(s)) fatSect.push(s); }
+  let difat = u32(0x44), vueltas = 0;
+  while(difat < FIN && valido(difat) && vueltas++ < 10000){
+    const sd = new DataView(sector(difat).buffer);
+    for(let k = 0; k < ssz/4 - 1; k++){ const s = sd.getUint32(k*4, true); if(s < FIN && valido(s)) fatSect.push(s); }
+    difat = sd.getUint32(ssz - 4, true);
+  }
+  const fat = [];
+  for(const s of fatSect){ const sd = new DataView(sector(s).buffer); for(let k = 0; k < ssz/4; k++) fat.push(sd.getUint32(k*4, true)); }
+  const cadena = ini => {
+    const out = [], vistos = new Set();
+    for(let s = ini; s < FIN && valido(s) && !vistos.has(s); s = s < fat.length ? fat[s] : FIN){ vistos.add(s); out.push(s); }
+    return out;
+  };
+  const juntar = (lista, tam) => {
+    const out = new Uint8Array(lista.length * ssz);
+    lista.forEach((s, k) => out.set(sector(s), k * ssz));
+    return out.subarray(0, Math.min(tam, out.length));
+  };
+  const esBOF = d => d.length > 8 && d[0] === 0x09 && d[1] === 0x08;
+
+  // Entradas de directorio: por la cadena normal y, si está rota, revisando todo el archivo
+  const nombreEntrada = (d, o) => {
+    const len = d[o+0x40] | (d[o+0x41] << 8);
+    if(len < 2 || len > 64) return '';
+    let s = '';
+    for(let k = 0; k < len - 2; k += 2) s += String.fromCharCode(d[o+k] | (d[o+k+1] << 8));
+    return s;
+  };
+  const entradas = [];
+  const leerEntradas = (d) => {
+    for(let o = 0; o + 128 <= d.length; o += 128){
+      const nombre = nombreEntrada(d, o), tipo = d[o+0x42];
+      if(!nombre || (tipo !== 1 && tipo !== 2 && tipo !== 5)) continue;
+      const v = new DataView(d.buffer, d.byteOffset + o, 128);
+      entradas.push({ nombre, tipo, inicio: v.getUint32(0x74, true), tam: v.getUint32(0x78, true) });
+    }
+  };
+  leerEntradas(juntar(cadena(u32(0x30)), Infinity));
+  if(!entradas.some(e => /^(Workbook|Book)$/i.test(e.nombre))) leerEntradas(u8.subarray(ssz));
+
+  const raiz = entradas.find(e => e.tipo === 5);
+  const corte = u32(0x38) || 4096;
+  let datos = null;
+  for(const e of entradas.filter(e => e.tipo === 2 && /^(Workbook|Book)$/i.test(e.nombre))){
+    if(e.tam >= corte){
+      // 1) siguiendo la tabla de sectores; 2) si no sirve, sectores seguidos desde el inicio
+      let d = juntar(cadena(e.inicio), e.tam);
+      if(!esBOF(d) || d.length < e.tam){
+        const seguidos = [];
+        for(let s = e.inicio; valido(s) && seguidos.length * ssz < e.tam; s++) seguidos.push(s);
+        const d2 = juntar(seguidos, e.tam);
+        if(esBOF(d2) && d2.length >= d.length) d = d2;
+      }
+      if(esBOF(d)){ datos = d; break; }
+    }else if(raiz){
+      // Archivo chico: está guardado en la mini-tabla (sectores de 64 bytes)
+      const mini = juntar(cadena(raiz.inicio), raiz.tam);
+      const mfat = [];
+      for(const s of cadena(u32(0x3C))){ const sd = new DataView(sector(s).buffer); for(let k = 0; k < ssz/4; k++) mfat.push(sd.getUint32(k*4, true)); }
+      const partes = [], vistos = new Set();
+      for(let s = e.inicio; s < FIN && s * 64 < mini.length && !vistos.has(s); s = s < mfat.length ? mfat[s] : FIN){ vistos.add(s); partes.push(mini.subarray(s*64, s*64 + 64)); }
+      const d = new Uint8Array(partes.length * 64);
+      partes.forEach((p, k) => d.set(p, k * 64));
+      if(esBOF(d)){ datos = d.subarray(0, e.tam); break; }
+    }
+  }
+  // Último recurso: buscar el comienzo de la hoja (BOF de libro BIFF8) y tomar desde ahí
+  if(!datos){
+    for(let o = ssz; o + 8 < u8.length; o += 64){
+      if(u8[o] === 0x09 && u8[o+1] === 0x08 && u8[o+2] === 0x10 && u8[o+3] === 0x00 && u8[o+4] === 0x00 && u8[o+5] === 0x06 && u8[o+6] === 0x05 && u8[o+7] === 0x00){
+        datos = u8.subarray(o); break;
+      }
+    }
+  }
+  if(!datos) return null;
+  const cfb = XLSX.CFB.utils.cfb_new();
+  XLSX.CFB.utils.cfb_add(cfb, '/Workbook', datos);
+  return XLSX.CFB.write(cfb, { type: 'array' });
+}
+
+// Lee cualquier Excel/CSV; si es un .xls dañado, intenta rescatarlo antes de rendirse.
+function leerLibroExcel(data){
+  try{
+    return XLSX.read(data, {type:'array'});
+  }catch(err){
+    let sano = null;
+    try{ sano = rescatarXlsDaniado(data); }catch(e){ console.warn('Rescate de .xls falló', e); }
+    if(!sano) throw err;
+    console.warn('El .xls venía dañado; se leyó con el rescate.', err);
+    return XLSX.read(new Uint8Array(sano), {type:'array'});
+  }
+}
+
 async function cargarArchivoEnContexto(file){
   if(!file) return;
   const esPdf = (file.type === 'application/pdf') || /\.pdf$/i.test(file.name || '');
@@ -4277,7 +4398,7 @@ async function cargarArchivoEnContexto(file){
   try{
     const buf = await file.arrayBuffer();
     const data = new Uint8Array(buf);
-    const wb = XLSX.read(data, {type:'array'});
+    const wb = leerLibroExcel(data);
     const primeraHoja = wb.SheetNames[0];
     const rows = extractRows(wb, primeraHoja);
     if(!rows || rows.length < 1){
