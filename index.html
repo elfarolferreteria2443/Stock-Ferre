@@ -648,36 +648,69 @@ async function saveConfiguracion(){
   catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
 }
 
-/* ---------------- Integración con Gmail (buscar listas de precios) ---------------- */
+/* ---------------- Buscar y actualizar listas (Gmail + Yahoo) ----------------
+   Un solo botón ("Buscar y actualizar listas") junta las listas de precios nuevas que
+   llegaron por mail y actualiza los precios solo:
+   - Gmail: lo lee este navegador (permiso de Google, gmail.readonly).
+   - Yahoo: lo lee el "cartero" (Ferreteria_Proyecto\cartero, corre en la PC principal) y
+     las sube a Firebase (buzonListas/items + buzonListas/archivos). La app le avisa que
+     revise escribiendo buzonListas/pedido y espera su respuesta en buzonListas/estado.
+   El proveedor de cada lista se reconoce por el nombre del archivo, el asunto y quién la
+   manda. Las que son seguras se importan solas; las dudosas quedan para revisar.
+   Lo importado/descartado no vuelve a aparecer (Firebase, clave "gmailListas"). */
 let gmailAccessToken = null;
+let gmailAccionPendiente = null; // qué hacer apenas Google devuelve el permiso
+const GMAIL_DIAS_BUSQUEDA = 60;
+const GMAIL_MAX_MENSAJES = 40;
+const GMAIL_EXT_LISTA = /\.(xlsx|xls|xlsm|csv|pdf)$/i;
+const GMAIL_DOMINIOS_GENERICOS = /^(gmail|googlemail|hotmail|outlook|live|yahoo|icloud|me|arnet|fibertel|speedy|ciudad)\./i;
+// Palabras que no sirven para reconocer a un proveedor ("Distribuidora Sur SRL" -> "sur")
+const PALABRAS_GENERICAS_PROV = new Set(['distribuidora','distribuciones','ferreteria','ferretera','mayorista','comercial','sa','srl','sas','hnos','hermanos','e','y','de','del','la','el','los','las','cia','lista','listas','precios','catalogo']);
+// Adjuntos que casi seguro no son listas de precios: nunca se importan solos
+const RE_NO_ES_LISTA = /factura|remito|recibo|nota\s*de\s*cr[eé]dito|presupuesto|orden\s*de\s*compra|comprobante|resumen\s*de\s*cuenta|cta\.?\s*cte/i;
+const IMPORT_AUTO_MIN_PRODUCTOS = 20;   // menos que esto no parece una lista
+const IMPORT_AUTO_MIN_COINCIDEN = 0.3;  // parte de la lista que tiene que coincidir con lo que ya hay del proveedor
+
+let gmailListasEstado = null;     // { importados:{clave:{fecha,proveedorId}}, descartados:{clave:fecha}, remitentes:{mailCodificado:proveedorId} }
+let gmailResultados = [];         // adjuntos encontrados en la última búsqueda (Gmail y Yahoo)
+let gmailFiltroProveedor = null;  // si se buscó desde la tarjeta de un proveedor
+let gmailMostrarTodo = false;     // mostrar también lo ya importado/descartado
+let listasAvisos = [];            // avisos de la última búsqueda (Yahoo sin responder, Gmail sin permiso...)
+let listasActualizadas = [];      // lo que se importó solo en la última búsqueda
 
 /* Pide el permiso de Gmail con Google Identity Services (independiente del login de Firebase).
    Evita el problema de signInWithRedirect al pedir un permiso extra estando ya logueado, que
-   no siempre devuelve el token de acceso. */
-function reconectarGmail(proveedorId){
+   no siempre devuelve el token de acceso. Si se cierra la ventana, sigue sin Gmail. */
+function reconectarGmail(accion, accionSinGmail){
   if(!window.google || !google.accounts || !google.accounts.oauth2){
     showToast('Todavía está cargando el sistema de Google. Esperá un segundo y probá de nuevo.');
     return;
   }
+  gmailAccionPendiente = accion || null;
   showToast('Confirmá el permiso de Gmail en la ventana que se abrió...');
   const client = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_OAUTH_CLIENT_ID,
     scope: 'https://www.googleapis.com/auth/gmail.readonly',
     hint: configCuentaGmail || undefined,
     callback: (tokenResponse) => {
+      const accion = gmailAccionPendiente;
+      gmailAccionPendiente = null;
       if(tokenResponse && tokenResponse.access_token){
         gmailAccessToken = tokenResponse.access_token;
-        showToast('Gmail conectado, buscando...');
-        if(proveedorId) buscarListaGmail(proveedorId);
+        if(accion) accion();
       }else{
         showToast('No se pudo obtener el permiso de Gmail.');
+        if(accionSinGmail) accionSinGmail();
       }
     },
     error_callback: (err) => {
+      gmailAccionPendiente = null;
       showToast('No se pudo conectar con Gmail: ' + (err && err.type ? err.type : 'error desconocido'));
+      if(accionSinGmail) accionSinGmail();
     }
   });
-  client.requestAccessToken({ prompt: 'consent' });
+  // Sin "consent": si ya se dio permiso antes, la ventana se cierra sola
+  client.requestAccessToken({ prompt: '' });
 }
 
 async function gmailFetch(url){
@@ -692,8 +725,8 @@ function extraerAdjuntosDeMensaje(msg){
   const out = [];
   function recorrer(part){
     if(!part) return;
-    if(part.filename && part.body && part.body.attachmentId && /\.(xlsx|xls|csv)$/i.test(part.filename)){
-      out.push({ filename: part.filename, attachmentId: part.body.attachmentId });
+    if(part.filename && part.body && part.body.attachmentId && GMAIL_EXT_LISTA.test(part.filename)){
+      out.push({ filename: part.filename, attachmentId: part.body.attachmentId, mimeType: part.mimeType || '' });
     }
     if(part.parts) part.parts.forEach(recorrer);
   }
@@ -701,81 +734,448 @@ function extraerAdjuntosDeMensaje(msg){
   return out;
 }
 
-async function buscarListaGmail(proveedorId){
-  const pr = proveedores.find(x=>x.id===proveedorId);
-  if(!pr) return;
-  if(!pr.mail){ showToast('Este proveedor no tiene un mail cargado. Agregalo con el botón ✎ Editar.'); return; }
-  if(!gmailAccessToken){
-    reconectarGmail(proveedorId);
-    return;
+/* ---- Lo ya importado / descartado / remitentes aprendidos ---- */
+async function cargarEstadoGmailListas(){
+  if(gmailListasEstado) return gmailListasEstado;
+  let v = null;
+  try{ v = await fbGet('gmailListas'); }catch(e){
+    try{ v = JSON.parse(localStorage.getItem('ferreteria_gmailListas') || 'null'); }catch(e2){}
   }
-  showToast('Buscando en Gmail...');
-  try{
-    const q = encodeURIComponent(`from:(${pr.mail}) has:attachment (filename:xlsx OR filename:xls OR filename:csv)`);
-    const data = await gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=15`);
-    const msgs = data.messages || [];
-    if(msgs.length === 0){ showToast('No encontré mails de ' + pr.mail + ' con una lista adjunta.'); return; }
-    const detalles = [];
-    for(const m of msgs){
-      const full = await gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`);
-      const adjuntos = extraerAdjuntosDeMensaje(full);
-      if(adjuntos.length){
-        const headers = full.payload.headers || [];
-        const asunto = (headers.find(h=>h.name==='Subject')||{}).value || '(sin asunto)';
-        const fecha = (headers.find(h=>h.name==='Date')||{}).value || '';
-        detalles.push({ msgId: m.id, asunto, fecha, adjuntos });
-      }
-    }
-    if(detalles.length === 0){ showToast('Encontré mails de ese proveedor pero ninguno con un Excel o CSV adjunto.'); return; }
-    mostrarModalResultadosGmail(pr, detalles);
-  }catch(e){
-    if(e.code === 'TOKEN_VENCIDO' || e.code === 'SIN_TOKEN'){
-      reconectarGmail(proveedorId);
-    }else{
-      showToast('Error buscando en Gmail: ' + e.message);
-    }
-  }
+  gmailListasEstado = { importados: {}, descartados: {}, remitentes: {}, ...(v || {}) };
+  return gmailListasEstado;
+}
+async function guardarEstadoGmailListas(){
+  try{ localStorage.setItem('ferreteria_gmailListas', JSON.stringify(gmailListasEstado)); }catch(e){}
+  try{ await fbSet('gmailListas', gmailListasEstado); }catch(e){ /* queda al menos en este navegador */ }
+}
+// Firebase no acepta . # $ [ ] / en las claves
+function claveFirebase(s){ return String(s||'').replace(/[.#$\[\]\/%]/g, c => '%' + c.charCodeAt(0).toString(16)); }
+function claveAdjuntoGmail(msgId, filename){ return claveFirebase(msgId + '_' + filename); }
+
+function esMailPropio(mail){
+  const m = String(mail||'').toLowerCase();
+  return !!m && (EMAILS_AUTORIZADOS.some(e => e.toLowerCase() === m) || (configCuentaGmail && configCuentaGmail.toLowerCase() === m));
 }
 
-function mostrarModalResultadosGmail(pr, detalles){
-  const modal = document.getElementById('modalRoot');
-  let filas = '';
-  detalles.forEach(d => {
-    d.adjuntos.forEach(a => {
-      filas += `<div class="pedido-card" style="padding:10px 14px; margin-bottom:8px;">
-        <div style="font-weight:700; font-size:13.5px;">${esc(a.filename)}</div>
-        <div class="meta">${esc(d.asunto)} · ${esc(d.fecha)}</div>
-        <div class="row-actions" style="margin-top:8px;">
-          <button class="btn small" onclick="importarAdjuntoGmail('${pr.id}','${d.msgId}','${a.attachmentId}')">Usar este archivo</button>
-        </div>
-      </div>`;
-    });
-  });
-  modal.innerHTML = `
-  <div class="overlay" onclick="if(event.target===this) closeModal()">
-    <div class="modal wide">
-      <h3>Listas encontradas — ${esc(pr.nombre)}</h3>
-      <div class="subtitle">Elegí qué archivo importar (los más recientes aparecen primero).</div>
-      <div style="max-height:400px; overflow-y:auto;">${filas}</div>
-      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Cancelar</button></div>
+/* ---- Reconocer el proveedor ---- */
+function normPalabras(s){
+  return ' ' + String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9ñ]+/g, ' ').trim() + ' ';
+}
+// Nombres con los que se puede reconocer a un proveedor: el nombre, el nombre sin palabras
+// genéricas ("Distribuidora Sur SRL" -> "sur") y los "otros nombres" cargados a mano.
+function nombresReconocibles(pr){
+  const lista = [pr.nombre, ...String(pr.alias||'').split(',')];
+  const out = new Set();
+  for(const n of lista){
+    const completo = normPalabras(n).trim();
+    if(completo.length >= 2) out.add(completo);
+    const nucleo = completo.split(' ').filter(w => w && !PALABRAS_GENERICAS_PROV.has(w)).join(' ');
+    if(nucleo.length >= 2 && nucleo !== completo) out.add(nucleo);
+  }
+  return [...out];
+}
+function contieneNombre(textoNorm, nombres){ return nombres.some(n => textoNorm.includes(' ' + n + ' ')); }
+function mailsDeProveedor(pr){
+  return String(pr.mail||'').toLowerCase().split(/[,;\s]+/).filter(m => m.includes('@'));
+}
+function dominioDe(mail){ return String(mail||'').toLowerCase().split('@')[1] || ''; }
+
+function parsearRemitente(from){
+  const m = String(from||'').match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>/);
+  if(m) return { nombre: m[1].trim(), mail: m[2].trim().toLowerCase() };
+  return { nombre: '', mail: String(from||'').trim().toLowerCase() };
+}
+
+// Devuelve { proveedorId, motivos, empate } con el proveedor que más puntaje saca (null si empata o no hay).
+function detectarProveedorDeAdjunto(adj){
+  const archivo = normPalabras(adj.filename.replace(GMAIL_EXT_LISTA, ''));
+  const asunto = normPalabras(adj.asunto);
+  const remitenteNorm = normPalabras(adj.remitenteNombre + ' ' + adj.remitenteMail.replace(/@/g, ' '));
+  const propio = esMailPropio(adj.remitenteMail);
+  const aprendido = gmailListasEstado && gmailListasEstado.remitentes[claveFirebase(adj.remitenteMail)];
+  const puntajes = [];
+  for(const pr of proveedores){
+    const nombres = nombresReconocibles(pr);
+    let pts = 0; const motivos = [];
+    if(contieneNombre(archivo, nombres)){ pts += 3; motivos.push('nombre del archivo'); }
+    if(contieneNombre(asunto, nombres)){ pts += 2; motivos.push('asunto'); }
+    if(!propio){
+      const mails = mailsDeProveedor(pr);
+      if(mails.includes(adj.remitenteMail)){ pts += 3; motivos.push('mail del proveedor'); }
+      else if(aprendido === pr.id){ pts += 2; motivos.push('ya te mandó listas de este proveedor'); }
+      else{
+        const dom = dominioDe(adj.remitenteMail);
+        if(dom && !GMAIL_DOMINIOS_GENERICOS.test(dom) && mails.some(m => dominioDe(m) === dom)){ pts += 2; motivos.push('dominio del mail'); }
+        if(contieneNombre(remitenteNorm, nombres)){ pts += 2; motivos.push('quién lo manda'); }
+      }
+    }
+    if(pts > 0) puntajes.push({ pr, pts, motivos });
+  }
+  puntajes.sort((a,b) => b.pts - a.pts);
+  if(!puntajes.length || (puntajes[1] && puntajes[1].pts === puntajes[0].pts)){
+    return { proveedorId: null, motivos: [], empate: puntajes.length > 1 ? puntajes.filter(p => p.pts === puntajes[0].pts).map(p => p.pr.nombre) : [] };
+  }
+  return { proveedorId: puntajes[0].pr.id, motivos: puntajes[0].motivos, empate: [] };
+}
+
+/* ---- Buscar ---- */
+function esperar(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+function mostrarProgresoListas(texto){
+  document.getElementById('modalRoot').innerHTML = `
+  <div class="overlay">
+    <div class="modal">
+      <h3>Buscar y actualizar listas</h3>
+      <div class="step-label" style="margin:10px 0 4px;">⏳ ${esc(texto)}</div>
+      <div class="meta">No cierres esta ventana: puede tardar un poco si hay listas grandes.</div>
     </div>
   </div>`;
 }
 
-async function importarAdjuntoGmail(proveedorId, msgId, attachmentId){
-  try{
-    showToast('Descargando archivo de Gmail...');
-    const data = await gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${msgId}/attachments/${attachmentId}`);
-    const b64 = (data.data || '').replace(/-/g,'+').replace(/_/g,'/');
-    const binario = atob(b64);
-    const bytes = new Uint8Array(binario.length);
-    for(let i=0;i<binario.length;i++) bytes[i] = binario.charCodeAt(i);
-    const blob = new Blob([bytes]);
-    openImportModal(proveedorId);
-    await cargarArchivoEnContexto(blob);
-  }catch(e){
-    showToast('No se pudo descargar el adjunto: ' + e.message);
+async function buscarAdjuntosGmail(){
+  const q = encodeURIComponent(`has:attachment (filename:xlsx OR filename:xls OR filename:xlsm OR filename:csv OR filename:pdf) newer_than:${GMAIL_DIAS_BUSQUEDA}d -in:chats`);
+  const data = await gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=${GMAIL_MAX_MENSAJES}`);
+  const msgs = data.messages || [];
+  const out = [];
+  // De a 6 mensajes en paralelo
+  for(let i = 0; i < msgs.length; i += 6){
+    const fulls = await Promise.all(msgs.slice(i, i+6).map(m => gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`)));
+    for(const full of fulls){
+      const headers = full.payload && full.payload.headers || [];
+      const h = n => (headers.find(x => x.name.toLowerCase() === n) || {}).value || '';
+      const rem = parsearRemitente(h('from'));
+      for(const a of extraerAdjuntosDeMensaje(full)){
+        out.push({
+          origen: 'gmail', msgId: full.id, attachmentId: a.attachmentId, filename: a.filename, mimeType: a.mimeType,
+          asunto: h('subject') || '(sin asunto)', remitenteNombre: rem.nombre, remitenteMail: rem.mail,
+          fecha: Number(full.internalDate) || 0, clave: claveAdjuntoGmail(full.id, a.filename),
+        });
+      }
+    }
   }
+  return out;
+}
+
+// Le pide al cartero que revise Yahoo ya, espera su respuesta y trae lo que haya subido.
+async function buscarAdjuntosYahoo(){
+  const avisos = [];
+  try{
+    const pedido = Date.now();
+    await fbSet('buzonListas/pedido', pedido);
+    let estado = (await fbGet('buzonListas/estado')) || {};
+    if(!estado.vivo){
+      avisos.push('Yahoo: el cartero todavía no está configurado (en la PC principal, doble clic en CONFIGURAR_CARTERO.bat).');
+    }else if(Date.now() - estado.vivo > 3 * 60e3){
+      avisos.push(`Yahoo: la PC del cartero no responde desde el ${new Date(estado.vivo).toLocaleString('es-AR')} (¿está apagada?). Se usan las listas de Yahoo que ya había subido.`);
+    }else{
+      mostrarProgresoListas('Revisando Yahoo...');
+      const limite = Date.now() + 60e3;
+      while(!(Number(estado.atendido) >= pedido) && Date.now() < limite){
+        await esperar(2500);
+        estado = (await fbGet('buzonListas/estado')) || {};
+      }
+      if(!(Number(estado.atendido) >= pedido)) avisos.push('Yahoo tardó demasiado en responder: se usan las listas que ya estaban subidas.');
+      else if(estado.ok === false) avisos.push('Yahoo: el cartero no pudo entrar (' + (estado.error || 'error') + '). Si cambiaste la contraseña, volvé a correr CONFIGURAR_CARTERO.bat.');
+    }
+    const items = (await fbGet('buzonListas/items')) || {};
+    return {
+      adjuntos: Object.entries(items).map(([id, m]) => ({
+        origen: 'yahoo', yahooId: id, msgId: id, filename: m.filename || 'lista', mimeType: m.mimeType || '',
+        asunto: m.asunto || '(sin asunto)', remitenteNombre: m.remitenteNombre || '', remitenteMail: String(m.remitenteMail||'').toLowerCase(),
+        fecha: Number(m.fecha) || 0, pedazos: Number(m.pedazos) || 1, clave: 'y_' + id,
+      })),
+      avisos,
+    };
+  }catch(e){
+    avisos.push('No se pudieron leer las listas de Yahoo: ' + e.message);
+    return { adjuntos: [], avisos };
+  }
+}
+
+// Desde la tarjeta de un proveedor: misma búsqueda, solo para ese proveedor.
+function buscarListaGmail(proveedorId){ return buscarYActualizarListas(proveedorId); }
+
+async function buscarYActualizarListas(proveedorId, sinGmail){
+  gmailFiltroProveedor = proveedorId || null;
+  if(!gmailAccessToken && !sinGmail){
+    reconectarGmail(() => buscarYActualizarListas(proveedorId), () => buscarYActualizarListas(proveedorId, true));
+    return;
+  }
+  listasAvisos = []; listasActualizadas = [];
+  mostrarProgresoListas(sinGmail ? 'Buscando listas en Yahoo...' : 'Buscando listas en Gmail y Yahoo...');
+  try{
+    await cargarEstadoGmailListas();
+    const yahooPromesa = buscarAdjuntosYahoo();
+    let gmail = [];
+    if(sinGmail) listasAvisos.push('Gmail: no se revisó (no se dio el permiso).');
+    else{
+      try{ gmail = await buscarAdjuntosGmail(); }
+      catch(e){
+        if(e.code === 'TOKEN_VENCIDO' || e.code === 'SIN_TOKEN'){
+          gmailAccessToken = null;
+          closeModal();
+          reconectarGmail(() => buscarYActualizarListas(proveedorId), () => buscarYActualizarListas(proveedorId, true));
+          return;
+        }
+        listasAvisos.push('Gmail: ' + e.message);
+      }
+    }
+    const yahoo = await yahooPromesa;
+    listasAvisos.push(...yahoo.avisos);
+    gmailResultados = [...gmail, ...yahoo.adjuntos].sort((a,b) => b.fecha - a.fecha);
+    for(const a of gmailResultados){
+      const det = detectarProveedorDeAdjunto(a);
+      a.proveedorId = det.proveedorId; a.motivos = det.motivos; a.empate = det.empate;
+      a.seleccionado = !!det.proveedorId;
+    }
+    gmailMostrarTodo = false;
+    await actualizarListasAutomaticamente();
+    if(listasActualizadas.length) render();
+    mostrarModalListasGmail();
+  }catch(e){
+    closeModal();
+    showToast('Error buscando listas: ' + e.message);
+  }
+}
+
+/* ---- Importar solo lo seguro ----
+   Por cada proveedor se importa la lista del mail más nuevo. No se importa sola si: parece
+   factura/remito, es la primera vez (hay que elegir columnas), el Excel cambió de formato,
+   tiene muy pocos productos, o casi nada coincide con lo que ya hay de ese proveedor. */
+async function actualizarListasAutomaticamente(){
+  const nuevos = gmailResultados.filter(a => estadoAdjuntoGmail(a) === 'nuevo' && a.proveedorId && (!gmailFiltroProveedor || a.proveedorId === gmailFiltroProveedor));
+  const listas = [];
+  for(const a of nuevos){
+    if(RE_NO_ES_LISTA.test(a.filename + ' ' + a.asunto)){ a.motivoRevision = 'Parece una factura o comprobante, no una lista'; a.seleccionado = false; }
+    else listas.push(a);
+  }
+  // El mail más nuevo de cada proveedor, contando también los ya importados: así nunca se
+  // importa sola una lista más vieja que otra que ya se importó.
+  const msgMasNuevo = {};
+  for(const a of gmailResultados){
+    if(!a.proveedorId || estadoAdjuntoGmail(a) === 'descartado' || RE_NO_ES_LISTA.test(a.filename + ' ' + a.asunto)) continue;
+    const actual = msgMasNuevo[a.proveedorId];
+    if(!actual || a.fecha > actual.fecha) msgMasNuevo[a.proveedorId] = a;
+  }
+  const aImportar = [];
+  for(const a of listas){
+    const pr = proveedores.find(x => x.id === a.proveedorId);
+    const diaMail = a.fecha ? new Date(a.fecha).toISOString().slice(0,10) : '';
+    if(msgMasNuevo[a.proveedorId].msgId !== a.msgId){ a.motivoRevision = 'Hay una lista más nueva de este proveedor'; a.seleccionado = false; continue; }
+    if(pr && pr.ultimaImportacion && diaMail && diaMail < pr.ultimaImportacion){ a.motivoRevision = `Es más vieja que la última lista importada de este proveedor (${pr.ultimaImportacion})`; a.seleccionado = false; continue; }
+    aImportar.push(a);
+  }
+  for(let i = 0; i < aImportar.length; i++){
+    const a = aImportar[i];
+    const pr = proveedores.find(x => x.id === a.proveedorId);
+    mostrarProgresoListas(`Actualizando ${i+1} de ${aImportar.length}: ${pr ? pr.nombre : ''} (${a.filename})`);
+    try{
+      const file = await descargarAdjuntoLista(a);
+      a.archivo = file;
+      const r = await importarArchivoAutomatico(file, a.proveedorId);
+      if(r.ok){
+        await marcarImportadoGmail(file, a.proveedorId);
+        listasActualizadas.push({ adj: a, proveedorId: a.proveedorId, ...r });
+      }else{
+        a.motivoRevision = r.motivo;
+      }
+    }catch(e){
+      if(e.code === 'TOKEN_VENCIDO' || e.code === 'SIN_TOKEN'){ a.motivoRevision = 'Se venció el permiso de Gmail: tocá "Importar seleccionadas"'; gmailAccessToken = null; }
+      else a.motivoRevision = 'No se pudo descargar o leer: ' + e.message;
+    }
+  }
+}
+
+// Carga el archivo en la ventana de importación (sin mostrarla al usuario) y, si la lista
+// pasa los controles, la importa igual que "Confirmar importación".
+async function importarArchivoAutomatico(file, proveedorId){
+  const pr = proveedores.find(x => x.id === proveedorId);
+  if(!pr) return { ok: false, motivo: 'El proveedor ya no existe' };
+  const configOk = pr.importConfig && pr.importConfig.colPrecio != null && pr.importConfig.colDescripcion != null;
+  const esPdf = /\.pdf$/i.test(file.name || '');
+  openImportModal(proveedorId);
+  await cargarArchivoEnContexto(file);
+  const rows = importCtx.rows;
+  if(!rows || !rows.length){
+    closeModal();
+    if(esPdf) return { ok: false, motivo: 'No se pudieron leer productos del PDF' };
+    return { ok: false, motivo: configOk ? 'El archivo cambió de formato desde la última vez: hay que revisar las columnas' : 'Es la primera lista de este proveedor: hay que elegir las columnas una vez' };
+  }
+  const validas = rows.filter(r => r.incluir);
+  const existentes = productos.filter(p => p.proveedorId === proveedorId).length;
+  const coinciden = validas.filter(r => r.match).length;
+  if(validas.length < IMPORT_AUTO_MIN_PRODUCTOS){ closeModal(); return { ok: false, motivo: `Tiene solo ${validas.length} producto(s): no parece una lista completa` }; }
+  if(existentes >= IMPORT_AUTO_MIN_PRODUCTOS && coinciden / validas.length < IMPORT_AUTO_MIN_COINCIDEN){
+    closeModal();
+    return { ok: false, motivo: `Solo ${coinciden} de ${validas.length} productos coinciden con los que ya tenés de ${pr.nombre}: revisá que sea de este proveedor` };
+  }
+  const r = await aplicarImportacion();
+  closeModal();
+  return { ok: true, actualizados: r.actualizados, creados: r.creados };
+}
+
+function estadoAdjuntoGmail(adj){
+  if(gmailListasEstado.importados[adj.clave]) return 'importado';
+  if(gmailListasEstado.descartados[adj.clave]) return 'descartado';
+  return 'nuevo';
+}
+
+function gmailResultadosVisibles(){
+  return gmailResultados.filter(a =>
+    (gmailMostrarTodo || estadoAdjuntoGmail(a) === 'nuevo') &&
+    (!gmailFiltroProveedor || a.proveedorId === gmailFiltroProveedor));
+}
+
+function mostrarModalListasGmail(){
+  const visibles = gmailResultadosVisibles();
+  const ocultos = gmailResultados.filter(a => (!gmailFiltroProveedor || a.proveedorId === gmailFiltroProveedor) && estadoAdjuntoGmail(a) !== 'nuevo').length;
+  const prFiltro = gmailFiltroProveedor ? proveedores.find(x => x.id === gmailFiltroProveedor) : null;
+  const nombreProv = id => { const pr = proveedores.find(x => x.id === id); return pr ? pr.nombre : '?'; };
+  const opciones = (sel) => `<option value="">— Elegir proveedor —</option>` +
+    proveedoresOrdenados().map(pr => `<option value="${pr.id}" ${sel===pr.id?'selected':''}>${esc(pr.nombre)}</option>`).join('');
+
+  const actualizadas = listasActualizadas.filter(x => !gmailFiltroProveedor || x.proveedorId === gmailFiltroProveedor);
+  const resumen = actualizadas.length ? `
+    <div style="background:var(--good-bg); border-radius:8px; padding:10px 12px; margin-bottom:10px;">
+      <div style="font-weight:700; color:var(--good); margin-bottom:4px;">✓ Listas actualizadas (${actualizadas.length})</div>
+      ${actualizadas.map(x => `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; font-size:13px; margin-top:4px;">
+        <b>${esc(nombreProv(x.proveedorId))}</b>
+        <span class="meta" style="word-break:break-word;">${esc(x.adj.filename)} · ${x.actualizados} actualizados, ${x.creados} nuevos</span>
+        <button class="btn secondary small" title="Deshace esta importación" onclick="closeModal(); volverListaAnteriorProveedor('${x.proveedorId}')">Volver a la anterior</button>
+      </div>`).join('')}
+    </div>` : '';
+  const avisos = listasAvisos.length ? `
+    <div style="background:var(--warn-bg); color:var(--warn); border-radius:8px; padding:8px 12px; margin-bottom:10px; font-size:12.5px;">
+      ${listasAvisos.map(t => `<div>⚠ ${esc(t)}</div>`).join('')}
+    </div>` : '';
+
+  const filas = visibles.map(a => {
+    const idx = gmailResultados.indexOf(a);
+    const est = estadoAdjuntoGmail(a);
+    const fecha = a.fecha ? new Date(a.fecha).toLocaleDateString('es-AR') : '';
+    const detectado = a.motivoRevision
+      ? `<span style="color:var(--warn);">⚠ ${esc(a.motivoRevision)}</span>`
+      : a.proveedorId
+        ? `<span style="color:var(--good);">✓ ${esc(nombreProv(a.proveedorId))}, por ${esc(a.motivos.join(', ') || 'elección tuya')}</span>`
+        : a.empate.length ? `<span style="color:var(--warn);">Puede ser ${esc(a.empate.join(' o '))}: elegí</span>`
+        : `<span style="color:var(--ink-soft);">No se reconoció el proveedor</span>`;
+    return `<div class="pedido-card" style="padding:10px 14px; margin-bottom:8px; ${est !== 'nuevo' ? 'opacity:.6;' : ''}">
+      <div style="display:flex; gap:10px; align-items:flex-start; flex-wrap:wrap;">
+        <input type="checkbox" style="margin-top:3px;" ${a.seleccionado ? 'checked' : ''} onchange="gmailResultados[${idx}].seleccionado=this.checked; actualizarBotonImportarGmail()">
+        <div style="flex:1; min-width:220px;">
+          <div style="font-weight:700; font-size:13.5px; word-break:break-word;"><span class="badge">${a.origen === 'yahoo' ? 'Yahoo' : 'Gmail'}</span> ${esc(a.filename)}${est === 'importado' ? ' · <span class="meta">ya importada</span>' : est === 'descartado' ? ' · <span class="meta">descartada</span>' : ''}</div>
+          <div class="meta" style="word-break:break-word;">${esc(a.asunto)} · ${esc(a.remitenteNombre || a.remitenteMail)}${a.remitenteNombre ? ' &lt;' + esc(a.remitenteMail) + '&gt;' : ''} · ${esc(fecha)}</div>
+          <div class="meta" style="margin-top:2px;">${detectado}</div>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <select onchange="gmailResultados[${idx}].proveedorId=this.value||null; gmailResultados[${idx}].motivos=[]; if(this.value){ gmailResultados[${idx}].seleccionado=true; } mostrarModalListasGmail()">${opciones(a.proveedorId)}</select>
+          ${est === 'nuevo' ? `<button class="icon-btn" title="No es una lista de precios: no mostrarla más" onclick="descartarAdjuntoGmail(${idx})">✕</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const modal = document.getElementById('modalRoot');
+  modal.innerHTML = `
+  <div class="overlay" onclick="if(event.target===this) closeModal()">
+    <div class="modal wide">
+      <h3>Listas de Gmail y Yahoo${prFiltro ? ' — ' + esc(prFiltro.nombre) : ''}</h3>
+      ${resumen}${avisos}
+      ${visibles.length ? `<div class="step-label">Para revisar</div>
+      <div class="subtitle">Estas no se importaron solas. Elegí el proveedor si falta y tocá "Importar seleccionadas" (vas a ver la vista previa de cada una). Con ✕ descartás lo que no es una lista.</div>` : ''}
+      <div style="max-height:380px; overflow-y:auto;">${filas || (actualizadas.length ? '' : `<div class="meta" style="padding:14px 0;">No hay listas nuevas en los últimos ${GMAIL_DIAS_BUSQUEDA} días.</div>`)}</div>
+      <div class="meta" style="margin-top:6px; display:flex; gap:14px; flex-wrap:wrap;">
+        ${ocultos ? `<label style="cursor:pointer;"><input type="checkbox" ${gmailMostrarTodo ? 'checked' : ''} onchange="gmailMostrarTodo=this.checked; mostrarModalListasGmail()"> Mostrar también ${ocultos} ya importada(s) o descartada(s)</label>` : ''}
+        ${prFiltro ? `<a href="#" onclick="gmailFiltroProveedor=null; mostrarModalListasGmail(); return false;">Ver las de todos los proveedores</a>` : ''}
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Cerrar</button>
+        ${visibles.length ? `<button class="btn" id="btnImportarGmail" onclick="importarSeleccionadasGmail()">Importar seleccionadas</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+  actualizarBotonImportarGmail();
+}
+
+function actualizarBotonImportarGmail(){
+  const btn = document.getElementById('btnImportarGmail');
+  if(!btn) return;
+  const n = gmailResultadosVisibles().filter(a => a.seleccionado).length;
+  btn.textContent = n ? `Importar seleccionadas (${n})` : 'Importar seleccionadas';
+  btn.disabled = n === 0;
+}
+
+// Lo de Yahoo se borra de Firebase una vez importado o descartado (el cartero no lo vuelve a subir)
+async function borrarDelBuzonYahoo(a){
+  if(a.origen !== 'yahoo') return;
+  try{
+    await fbSet(`buzonListas/items/${a.yahooId}`, null);
+    await fbSet(`buzonListas/archivos/${a.yahooId}`, null);
+  }catch(e){ /* queda en el buzón, pero ya figura como importado/descartado */ }
+}
+
+async function descartarAdjuntoGmail(idx){
+  const a = gmailResultados[idx];
+  if(!a) return;
+  gmailListasEstado.descartados[a.clave] = today();
+  a.seleccionado = false;
+  mostrarModalListasGmail();
+  await guardarEstadoGmailListas();
+  await borrarDelBuzonYahoo(a);
+}
+
+function base64AArchivo(b64, a){
+  const binario = atob(b64.replace(/-/g,'+').replace(/_/g,'/'));
+  const bytes = new Uint8Array(binario.length);
+  for(let i=0;i<binario.length;i++) bytes[i] = binario.charCodeAt(i);
+  // Con nombre: así un PDF se reconoce como PDF al importarlo
+  const file = new File([bytes], a.filename, { type: a.mimeType || (/\.pdf$/i.test(a.filename) ? 'application/pdf' : '') });
+  file.gmailAdjunto = a;
+  file.proveedorPreasignado = a.proveedorId || null;
+  return file;
+}
+
+async function descargarAdjuntoLista(a){
+  if(a.archivo){ a.archivo.proveedorPreasignado = a.proveedorId || null; return a.archivo; }
+  if(a.origen === 'yahoo'){
+    const pedazos = await fbGet(`buzonListas/archivos/${a.yahooId}`);
+    const lista = Array.isArray(pedazos) ? pedazos : Object.keys(pedazos || {}).sort((x,y) => x - y).map(k => pedazos[k]);
+    if(!lista.length) throw new Error('el archivo ya no está en el buzón de Yahoo');
+    return base64AArchivo(lista.join(''), a);
+  }
+  const data = await gmailFetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${a.msgId}/attachments/${a.attachmentId}`);
+  return base64AArchivo(data.data || '', a);
+}
+
+// Lo que quedó para revisar: pasa por el flujo de "Importar varias listas" (con vista previa).
+async function importarSeleccionadasGmail(){
+  const elegidas = gmailResultadosVisibles().filter(a => a.seleccionado);
+  if(!elegidas.length) return;
+  const files = [];
+  try{
+    for(let i = 0; i < elegidas.length; i++){
+      showToast(`Descargando ${i+1} de ${elegidas.length}...`);
+      files.push(await descargarAdjuntoLista(elegidas[i]));
+    }
+  }catch(e){
+    if(e.code === 'TOKEN_VENCIDO' || e.code === 'SIN_TOKEN'){ gmailAccessToken = null; reconectarGmail(() => importarSeleccionadasGmail()); return; }
+    showToast('No se pudo descargar el adjunto: ' + e.message);
+    return;
+  }
+  iniciarLoteConArchivos(files);
+}
+
+// Al confirmar la importación de un archivo que vino por mail: no mostrarlo más y
+// recordar que ese remitente manda listas de ese proveedor.
+async function marcarImportadoGmail(file, proveedorId){
+  const a = file && file.gmailAdjunto;
+  if(!a) return;
+  await cargarEstadoGmailListas();
+  gmailListasEstado.importados[a.clave] = { fecha: today(), proveedorId };
+  if(a.remitenteMail && !esMailPropio(a.remitenteMail)) gmailListasEstado.remitentes[claveFirebase(a.remitenteMail)] = proveedorId;
+  await guardarEstadoGmailListas();
+  await borrarDelBuzonYahoo(a);
 }
 
 async function volverListaAnteriorProveedor(prId){
@@ -817,6 +1217,9 @@ function showToast(msg){
   window.__toastTimer = setTimeout(()=> t.classList.remove('show'), 2600);
 }
 
+// Orden alfabético de nombres sin importar mayúsculas ni acentos
+function compararNombres(a, b){ return String(a||'').localeCompare(String(b||''), 'es', { sensitivity: 'base', numeric: true }); }
+function proveedoresOrdenados(){ return proveedores.slice().sort((a,b) => compararNombres(a.nombre, b.nombre)); }
 function uid(){ return 'id_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7); }
 function money(n, decimales){
   n = Number(n)||0;
@@ -2337,7 +2740,7 @@ function openFaltanteModal(productId){
       <div class="subtitle">${esc(p.nombre)}</div>
       ${!p.proveedor ? `
         <div class="field"><label>¿A qué proveedor pedirlo?</label><input id="fal_proveedor" list="fal_prov_datalist" type="text" placeholder="Nombre del proveedor"></div>
-        <datalist id="fal_prov_datalist">${proveedores.map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
+        <datalist id="fal_prov_datalist">${proveedoresOrdenados().map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
       ` : `<div class="field"><label>Proveedor</label><input type="text" value="${esc(p.proveedor)}" disabled></div>`}
       <div class="field"><label>Cantidad a pedir</label><input id="fal_cantidad" type="number" min="1" value="${sugerido}"></div>
       <div class="modal-actions">
@@ -2419,7 +2822,7 @@ function openProductoModal(id){
         <input id="f_unidades" type="number" min="1" step="1" value="${editing && Number(editing.unidadesPorPrecio) >= 1 ? Number(editing.unidadesPorPrecio) : ''}" placeholder="${editing && unidadesDetectadasDe(editing) ? `Vacío = ${unidadesDetectadasDe(editing)} (detectado en la descripción)` : 'Vacío = 1 (precio por unidad)'}">
         <div class="meta" style="color:var(--ink-soft); font-size:11.5px; margin-top:3px;">Se usa para mostrar el precio por unidad y comparar proveedores. Poné 1 si el precio ya es por unidad aunque la descripción diga otra cosa.</div>
       </div>
-      <datalist id="prov_datalist">${proveedores.map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
+      <datalist id="prov_datalist">${proveedoresOrdenados().map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
       <datalist id="pres_datalist">
         <option value="Unidad"><option value="Docena"><option value="Media docena"><option value="Gruesa">
         <option value="Caja"><option value="Bulto"><option value="Par"><option value="Kg"><option value="Metro"><option value="Rollo">
@@ -2513,7 +2916,8 @@ function renderPedidos(){
 
 function renderPedidosListHtml(){
   const q = searchPedidos.trim().toLowerCase();
-  let ordenados = [...pedidos].sort((a,b)=> b.fecha.localeCompare(a.fecha));
+  // Por proveedor (alfabético) y, dentro de cada uno, los más nuevos primero
+  let ordenados = [...pedidos].sort((a,b)=> compararNombres(a.proveedor, b.proveedor) || b.fecha.localeCompare(a.fecha));
   if(q){
     ordenados = ordenados.filter(ped=>{
       const enProveedor = (ped.proveedor||'').toLowerCase().includes(q);
@@ -2953,7 +3357,7 @@ function openNuevoPedidoModal(){
     <div class="modal">
       <h3>Nuevo pedido</h3>
       <div class="field"><label>Proveedor</label><input id="np_proveedor" list="prov_datalist" type="text" placeholder="Ej: Distribuidora Sur"></div>
-      <datalist id="prov_datalist">${proveedores.map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
+      <datalist id="prov_datalist">${proveedoresOrdenados().map(pr=>`<option value="${esc(pr.nombre)}">`).join('')}</datalist>
       <div class="item-row-add">
         <div class="field" style="flex:2; min-width:140px;">
           <label>Producto</label>
@@ -3028,6 +3432,7 @@ function renderProveedores(){
       Importar varias listas
       <input type="file" accept=".xlsx,.xls,.csv,.xlsm,.pdf" multiple style="display:none;" onchange="abrirImportacionLote(this)">
     </label>
+    <button class="btn" title="Busca listas nuevas en Gmail y Yahoo, reconoce de qué proveedor es cada una y actualiza los precios" onclick="buscarYActualizarListas()">🔄 Buscar y actualizar listas</button>
     <button class="btn secondary" onclick="openProductoModal()">+ Agregar producto</button>
     <button class="btn" onclick="openProveedorModal()">+ Agregar proveedor</button>
   </div>
@@ -3052,7 +3457,7 @@ function renderProveedores(){
   }
 
   html += `<div class="prov-grid">`;
-  for(const pr of proveedores){
+  for(const pr of proveedoresOrdenados()){
     const cantProductos = productos.filter(p=>p.proveedorId === pr.id).length;
     const descuentos = getDescuentos(pr);
     const ganancias = getGanancias(pr);
@@ -3085,7 +3490,7 @@ function renderProveedores(){
         </div>
         <div style="display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
           <button class="btn secondary small" onclick="openImportModal('${pr.id}')">Importar lista</button>
-          <button class="btn btn-yellow small" title="${pr.mail ? 'Busca mails de ' + esc(pr.mail) + ' con una lista adjunta' : 'Cargale un mail a este proveedor primero (botón ✎ Editar)'}" onclick="buscarListaGmail('${pr.id}')">📧 Buscar en Gmail</button>
+          <button class="btn btn-yellow small" title="Busca en Gmail y Yahoo listas nuevas de este proveedor y las actualiza" onclick="buscarListaGmail('${pr.id}')">📧 Buscar lista por mail</button>
           <button class="btn btn-yellow small" title="Vuelve al estado de este proveedor antes de su última importación" onclick="volverListaAnteriorProveedor('${pr.id}')">Volver a lista anterior</button>
         </div>
       </div>
@@ -3364,8 +3769,7 @@ function renderMetricas(){
     html += `<div class="global-pct-note" style="margin:4px 0 14px 0;">Asigná el rubro de cada proveedor en la lista de abajo para que sus compras y ventas cuenten en su rubro.</div>`;
   }
 
-  const datos = proveedores.map(pr => ({ pr, m: calcularMetricasProveedor(pr) }))
-    .sort((a,b)=> b.m.totalComprado - a.m.totalComprado);
+  const datos = proveedoresOrdenados().map(pr => ({ pr, m: calcularMetricasProveedor(pr) }));
   const maxComprado = Math.max(1, ...datos.map(d=>d.m.totalComprado));
 
   html += `<div class="step-label" style="margin-top:18px;">Por proveedor</div>`;
@@ -3452,7 +3856,7 @@ function renderCuentas(){
     </select>
   </div>`;
 
-  saldos.sort((a,b)=> b.saldo - a.saldo);
+  saldos.sort((a,b)=> compararNombres(a.pr.nombre, b.pr.nombre));
 
   for(const {pr, saldo} of saldos){
     const expandida = cuentasExpandidas.has(pr.id);
@@ -3687,6 +4091,7 @@ function openProveedorModal(id){
       <div id="pv_pct_fields"></div>
       <div class="field"><label>WhatsApp del proveedor</label><input id="pv_whatsapp" type="text" value="${editing?esc(editing.whatsapp||''):''}" placeholder="Ej: 11 2345 6789 (opcional)"></div>
       <div class="field"><label>Mail del proveedor</label><input id="pv_mail" type="text" value="${editing?esc(editing.mail||''):''}" placeholder="Ej: ventas@proveedor.com (para buscar listas en Gmail)"></div>
+      <div class="field"><label>Otros nombres (para reconocer sus listas en Gmail)</label><input id="pv_alias" type="text" value="${editing?esc(editing.alias||''):''}" placeholder="Separados por coma. Ej: RK, Rk Distribuidora"></div>
       <div class="field"><label>Contacto</label><input id="pv_contacto" type="text" value="${editing?esc(editing.contacto||''):''}" placeholder="Otro dato de contacto (opcional)"></div>
       <div class="field">
         <label>¿Cómo cotiza los precios?</label>
@@ -3737,6 +4142,7 @@ function saveProveedor(id){
     ganancias: modalGanancias.map(g=>Number(g)||0),
     whatsapp: document.getElementById('pv_whatsapp').value.trim(),
     mail: document.getElementById('pv_mail').value.trim(),
+    alias: document.getElementById('pv_alias').value.trim(),
     contacto: document.getElementById('pv_contacto').value.trim(),
     cotizaPorUnidad: document.getElementById('pv_cotiza').value === 'unidad',
   };
@@ -4201,6 +4607,11 @@ function iniciarSiguienteDelLote(){
     return;
   }
   const file = loteArchivos[loteIndex];
+  // Viene de Gmail con el proveedor ya reconocido/elegido
+  if(file.proveedorPreasignado && proveedores.some(pr => pr.id === file.proveedorPreasignado)){
+    abrirImportLoteParaProveedor(file.proveedorPreasignado, file);
+    return;
+  }
   const nombreArchivo = normTxt(file.name.replace(/\.(xlsx|xls|csv|xlsm|pdf)$/i, ''));
   const sugeridos = proveedores.filter(pr => {
     const n = normTxt(pr.nombre);
@@ -4225,7 +4636,7 @@ function mostrarSelectorProveedorLote(file, sugeridos){
         <select id="lote_proveedor_sel">
           <option value="">— Elegir —</option>
           <option value="__nuevo__" ${proveedores.length===0 ? 'selected':''}>➕ Nuevo proveedor…</option>
-          ${proveedores.map(pr=>`<option value="${pr.id}" ${sugeridos.length===1 && sugeridos[0].id===pr.id ? 'selected':''}>${esc(pr.nombre)}</option>`).join('')}
+          ${proveedoresOrdenados().map(pr=>`<option value="${pr.id}" ${sugeridos.length===1 && sugeridos[0].id===pr.id ? 'selected':''}>${esc(pr.nombre)}</option>`).join('')}
         </select>
       </div>
       <div id="lote_nuevo_prov" style="display:none;">
@@ -4424,7 +4835,8 @@ function renderImportMapping(){
   const fileMaxCols = rows.reduce((m,r)=>Math.max(m, r.length), 1);
   const maxCols = Math.min(fileMaxCols, IMPORT_LETTERS.length);
   const pr = proveedores.find(x=>x.id===importCtx.proveedorId);
-  const config = pr ? pr.importConfig : null;
+  // Solo sirve una config con columnas (antes un PDF dejaba una vacía)
+  const config = pr && pr.importConfig && pr.importConfig.colPrecio != null && pr.importConfig.colDescripcion != null ? pr.importConfig : null;
 
   // Vista previa tipo Excel, con letras y número de columna (A a L como máximo) — 5 filas visibles
   const windowSize = 5;
@@ -4634,6 +5046,25 @@ function renderImportPreview(){
 }
 
 async function confirmarImport(){
+  const { pr, actualizados, creados } = await aplicarImportacion();
+  closeModal();
+  if(loteActivo) marcarImportadoGmail(loteArchivos[loteIndex], pr.id);
+
+  if(loteActivo){
+    showToast(`${pr.nombre}: ${actualizados} actualizados, ${creados} nuevos`);
+    loteIndex++;
+    setTimeout(()=> iniciarSiguienteDelLote(), 400);
+    return;
+  }
+
+  currentTab = 'stock';
+  render();
+  showToast(`Importación lista: ${actualizados} actualizados, ${creados} nuevos`);
+}
+
+// Aplica la importación cargada en importCtx (con respaldo previo del proveedor).
+// La usan "Confirmar importación" y la actualización automática de listas por mail.
+async function aplicarImportacion(){
   const prParaBackup = proveedores.find(x=>x.id===importCtx.proveedorId);
   // Guardar un respaldo del estado actual de ESTE proveedor antes de aplicar los cambios de esta importación
   if(prParaBackup){
@@ -4683,22 +5114,12 @@ async function confirmarImport(){
     }
   }
   // Guardar la configuración de columnas para la próxima importación de este proveedor
-  pr.importConfig = { ...importCtx.mapping, savedAt: today() };
+  // (un PDF no tiene columnas: no se pisa la config del Excel)
+  if(importCtx.mapping) pr.importConfig = { ...importCtx.mapping, savedAt: today() };
   pr.ultimaImportacion = today();
   saveProductos();
   saveProveedores();
-  closeModal();
-
-  if(loteActivo){
-    showToast(`${pr.nombre}: ${actualizados} actualizados, ${creados} nuevos`);
-    loteIndex++;
-    setTimeout(()=> iniciarSiguienteDelLote(), 400);
-    return;
-  }
-
-  currentTab = 'stock';
-  render();
-  showToast(`Importación lista: ${actualizados} actualizados, ${creados} nuevos`);
+  return { pr, actualizados, creados };
 }
 
 
