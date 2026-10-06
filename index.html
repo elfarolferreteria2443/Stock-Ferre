@@ -4273,7 +4273,7 @@ function extractRows(wb, sheetName){
    (SheetJS) corta con errores como "Cannot set properties of undefined (setting 'name')".
    Acá se busca a mano la parte con los datos ("Workbook"/"Book"), tolerando lo roto,
    y se arma un .xls sano con ella para leerlo normal. */
-function rescatarXlsDaniado(bytes){
+function rescatarHojaDatosXls(bytes){
   const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   const firma = [0xD0,0xCF,0x11,0xE0,0xA1,0xB1,0x1A,0xE1];
   if(u8.length < 512 || firma.some((b,i) => u8[i] !== b)) return null;
@@ -4369,22 +4369,59 @@ function rescatarXlsDaniado(bytes){
       }
     }
   }
-  if(!datos) return null;
-  const cfb = XLSX.CFB.utils.cfb_new();
-  XLSX.CFB.utils.cfb_add(cfb, '/Workbook', datos);
-  return XLSX.CFB.write(cfb, { type: 'array' });
+  return datos;
 }
 
-// Lee cualquier Excel/CSV; si es un .xls dañado, intenta rescatarlo antes de rendirse.
+// La parte de datos del .xls: con el lector normal del contenedor y, si falla, con el rescate.
+function hojaDatosXls(u8){
+  try{
+    const cfb = XLSX.CFB.read(u8, {type:'array'});
+    const e = cfb.FileIndex.find(f => /^(Workbook|Book)$/i.test(f.name) && f.content && f.content.length);
+    if(e) return new Uint8Array(e.content);
+  }catch(e){ /* contenedor roto: se rescata a mano */ }
+  return rescatarHojaDatosXls(u8);
+}
+
+// Anula los nombres definidos (registros NAME, 0x0018) y sus continuaciones. Hay .xls con un
+// filtro (_FilterDatabase) que apunta a una hoja que no existe y el lector corta con
+// "Cannot set properties of undefined (setting '!autofilter')". Para leer precios no hacen falta.
+function sinNombresXls(datos){
+  const d = new Uint8Array(datos);
+  const dv = new DataView(d.buffer);
+  let o = 0, anterior = -1;
+  while(o + 4 <= d.length){
+    const tipo = dv.getUint16(o, true), largo = dv.getUint16(o + 2, true);
+    if(tipo === 0x0018 || (tipo === 0x003C && anterior === 0x0018)){ dv.setUint16(o, 0x7FFE, true); anterior = 0x0018; }
+    else anterior = tipo;
+    o += 4 + largo;
+  }
+  return d;
+}
+
+function armarXls(datos){
+  const cfb = XLSX.CFB.utils.cfb_new();
+  XLSX.CFB.utils.cfb_add(cfb, '/Workbook', datos);
+  return new Uint8Array(XLSX.CFB.write(cfb, { type: 'array' }));
+}
+
+// Lee cualquier Excel/CSV; si es un .xls con problemas, prueba rescatarlo antes de rendirse.
 function leerLibroExcel(data){
   try{
     return XLSX.read(data, {type:'array'});
   }catch(err){
-    let sano = null;
-    try{ sano = rescatarXlsDaniado(data); }catch(e){ console.warn('Rescate de .xls falló', e); }
-    if(!sano) throw err;
-    console.warn('El .xls venía dañado; se leyó con el rescate.', err);
-    return XLSX.read(new Uint8Array(sano), {type:'array'});
+    const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+    let datos = null;
+    try{ datos = hojaDatosXls(u8); }catch(e){ console.warn('Rescate de .xls falló', e); }
+    if(!datos) throw err;
+    const intentos = [() => armarXls(datos), () => armarXls(sinNombresXls(datos))];
+    for(const intento of intentos){
+      try{
+        const wb = XLSX.read(intento(), {type:'array'});
+        console.warn('El .xls venía con problemas; se leyó con el rescate.', err);
+        return wb;
+      }catch(e){ /* sigue con el próximo */ }
+    }
+    throw err;
   }
 }
 
@@ -4423,15 +4460,24 @@ async function cargarArchivoEnContexto(file){
 // Guarda en la base una copia del archivo que no se pudo leer (archivosConError/), para
 // poder revisarlo y arreglar el lector sin tener que bajarlo a mano del mail.
 async function guardarArchivoQueFallo(file, err){
+  const ruta = 'archivosConError/' + claveFirebase(Date.now() + '_' + (file.name || 'archivo'));
   try{
     const buf = new Uint8Array(await file.arrayBuffer());
-    if(buf.length > 6 * 1024 * 1024) return; // Firebase no acepta textos tan grandes
-    let bin = '';
-    for(let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-    await fbSet('archivosConError/' + claveFirebase(Date.now() + '_' + (file.name || 'archivo')), {
-      nombre: file.name || '', fecha: new Date().toISOString(), error: String(err && err.message || err), base64: btoa(bin),
-    });
-  }catch(e){ console.warn('No se pudo guardar la copia del archivo con error', e); }
+    // Primero los datos (sin el archivo), así queda registro aunque falle la subida
+    await fbSet(ruta + '/info', { nombre: file.name || '', fecha: new Date().toISOString(), error: String(err && err.message || err), tamanio: buf.length });
+    if(buf.length > 40 * 1024 * 1024) return;
+    // En partes de 3 MB: Firebase no acepta textos de más de 10 MB
+    const PARTE = 3 * 1024 * 1024;
+    for(let n = 0, ini = 0; ini < buf.length; n++, ini += PARTE){
+      const pedazo = buf.subarray(ini, ini + PARTE);
+      let bin = '';
+      for(let i = 0; i < pedazo.length; i += 0x8000) bin += String.fromCharCode.apply(null, pedazo.subarray(i, i + 0x8000));
+      await fbSet(ruta + '/partes/' + n, btoa(bin));
+    }
+  }catch(e){
+    console.warn('No se pudo guardar la copia del archivo con error', e);
+    try{ await fbSet(ruta + '/fallaAlGuardar', String(e && e.message || e)); }catch(e2){}
+  }
 }
 
 function handleImportFile(input){
