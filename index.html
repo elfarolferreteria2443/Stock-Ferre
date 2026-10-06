@@ -487,7 +487,11 @@ let globalPctIva = 0;
 let configStockBajoDefault = 0;
 let configRedondeoStep = 1;
 let configWhatsappModo = 'web'; // 'web' = WhatsApp Web, 'escritorio' = app de escritorio
-let configCuentaGmail = ''; // mail de Google a usar siempre para buscar en Gmail
+// Cuentas donde llegan las listas de los proveedores (se cambian a mano en ⚙)
+const CUENTA_GMAIL_DEFAULT = 'elfarol.ferreteria2443@gmail.com';
+const CUENTA_YAHOO_DEFAULT = 'elfarol_ferreteria@yahoo.com.ar';
+let configCuentaGmail = CUENTA_GMAIL_DEFAULT; // mail de Google a usar siempre para buscar en Gmail
+let configCuentaYahoo = CUENTA_YAHOO_DEFAULT; // la que tiene que leer el cartero
 let currentUserEmail = '';
 let configAnthropicApiKey = localStorage.getItem('ferreteria_anthropic_key') || '';
 
@@ -601,7 +605,7 @@ async function loadAll(){
   if(colWidths._v !== COL_WIDTHS_VERSION){ Object.assign(colWidths, COL_WIDTHS_ANGOSTAS); colWidths._v = COL_WIDTHS_VERSION; }
   delete colWidths.producto;
   try{ const v = await fbGet('globalPct'); if(v){ globalPctTarjeta = Number(v.tarjeta)||0; globalPctIva = Number(v.iva)||0; } }catch(e){ /* usa 0 por defecto */ }
-  try{ const v = await fbGet('configuracion'); if(v){ configStockBajoDefault = Number(v.stockBajoDefault)||0; configRedondeoStep = Number(v.redondeoStep)||1; configWhatsappModo = v.whatsappModo === 'escritorio' ? 'escritorio' : 'web'; configCuentaGmail = v.cuentaGmail || ''; } }catch(e){ /* usa los valores por defecto */ }
+  try{ const v = await fbGet('configuracion'); if(v){ configStockBajoDefault = Number(v.stockBajoDefault)||0; configRedondeoStep = Number(v.redondeoStep)||1; configWhatsappModo = v.whatsappModo === 'escritorio' ? 'escritorio' : 'web'; configCuentaGmail = v.cuentaGmail || CUENTA_GMAIL_DEFAULT; configCuentaYahoo = v.cuentaYahoo || CUENTA_YAHOO_DEFAULT; } }catch(e){ /* usa los valores por defecto */ }
   render();
   window.__datosListos = true;
 }
@@ -644,7 +648,7 @@ async function saveGlobalPct(){
   catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
 }
 async function saveConfiguracion(){
-  try{ await fbSet('configuracion', {stockBajoDefault:configStockBajoDefault, redondeoStep:configRedondeoStep, whatsappModo:configWhatsappModo, cuentaGmail:configCuentaGmail}); }
+  try{ await fbSet('configuracion', {stockBajoDefault:configStockBajoDefault, redondeoStep:configRedondeoStep, whatsappModo:configWhatsappModo, cuentaGmail:configCuentaGmail, cuentaYahoo:configCuentaYahoo}); }
   catch(e){ showToast('No se pudo guardar en la nube. Revisá tu conexión.'); }
 }
 
@@ -908,6 +912,9 @@ async function buscarAdjuntosYahoo(){
       }
       if(!(Number(estado.atendido) >= pedido)) avisos.push('Yahoo tardó demasiado en responder: se usan las listas que ya estaban subidas.');
       else if(estado.ok === false) avisos.push('Yahoo: el cartero no pudo entrar (' + (estado.error || 'error') + '). Si cambiaste la contraseña, volvé a correr CONFIGURAR_CARTERO.bat.');
+      if(estado.cuenta && configCuentaYahoo && estado.cuenta.toLowerCase() !== configCuentaYahoo.toLowerCase()){
+        avisos.push(`Yahoo: el cartero está revisando ${estado.cuenta}, pero en ⚙ figura ${configCuentaYahoo}. En la PC principal, doble clic en CONFIGURAR_CARTERO.bat para cargar la cuenta correcta.`);
+      }
     }
     const items = (await fbGet('buzonListas/items')) || {};
     return {
@@ -1353,7 +1360,12 @@ function openConfiguracionModal(){
       <div class="field">
         <label>Cuenta de Gmail para buscar listas</label>
         <input id="cfg_cuenta_gmail" type="text" value="${esc(configCuentaGmail)}" placeholder="Ej: elfarol.ferreteria2443@gmail.com">
-        <div class="global-pct-note" style="margin-top:4px;">Fijá acá la cuenta de Google donde te llegan las listas de los proveedores, así "Buscar en Gmail" no te pide elegir cuenta cada vez.</div>
+        <div class="global-pct-note" style="margin-top:4px;">Cuenta de Google donde te llegan las listas de los proveedores. "Buscar y actualizar listas" revisa siempre esta, sin importar con qué cuenta entraste. Vacío = elfarol.ferreteria2443@gmail.com.</div>
+      </div>
+      <div class="field">
+        <label>Cuenta de Yahoo para buscar listas</label>
+        <input id="cfg_cuenta_yahoo" type="text" value="${esc(configCuentaYahoo)}" placeholder="Ej: elfarol_ferreteria@yahoo.com.ar">
+        <div class="global-pct-note" style="margin-top:4px;">La revisa el cartero de la PC principal. Si la cambiás, en esa PC hay que hacer doble clic en CONFIGURAR_CARTERO.bat y cargar la contraseña de aplicación de la cuenta nueva. Vacío = elfarol_ferreteria@yahoo.com.ar.</div>
       </div>
       <div class="field">
         <label>Clave de API de Anthropic (para leer fotos de facturas)</label>
@@ -1372,7 +1384,8 @@ function guardarConfiguracion(){
   configStockBajoDefault = Math.max(0, Math.round(Number(document.getElementById('cfg_stockbajo').value)||0));
   configRedondeoStep = Math.max(1, Math.round(Number(document.getElementById('cfg_redondeo').value)||1));
   configWhatsappModo = document.getElementById('cfg_whatsapp_modo').value === 'escritorio' ? 'escritorio' : 'web';
-  configCuentaGmail = document.getElementById('cfg_cuenta_gmail').value.trim();
+  configCuentaGmail = document.getElementById('cfg_cuenta_gmail').value.trim() || CUENTA_GMAIL_DEFAULT;
+  configCuentaYahoo = document.getElementById('cfg_cuenta_yahoo').value.trim() || CUENTA_YAHOO_DEFAULT;
   configAnthropicApiKey = document.getElementById('cfg_anthropic_key').value.trim();
   localStorage.setItem('ferreteria_anthropic_key', configAnthropicApiKey);
   saveConfiguracion();
