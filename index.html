@@ -497,6 +497,9 @@ let configAnthropicApiKey = localStorage.getItem('ferreteria_anthropic_key') || 
 
 /* ---------------- Almacenamiento persistente (Firebase Realtime Database) ---------------- */
 const FIREBASE_URL = 'https://datos-ferreteria-default-rtdb.firebaseio.com';
+// Cada parte de la ruta va codificada: las claves armadas con claveFirebase() llevan '%' (ej. 'F-1%2exls')
+// y sin codificar la base las rechaza ('Invalid token in path').
+function fbRuta(key){ return String(key).split('/').map(encodeURIComponent).join('/'); }
 
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyCc6LU6aJxUydQIZzbduJjQ1mmMrD1014E",
@@ -574,14 +577,14 @@ firebase.auth().getRedirectResult().then(result => {
 
 async function fbGet(key){
   const token = await getAuthToken();
-  const url = `${FIREBASE_URL}/${key}.json` + (token ? `?auth=${token}` : '');
+  const url = `${FIREBASE_URL}/${fbRuta(key)}.json` + (token ? `?auth=${token}` : '');
   const res = await fetch(url);
   if(!res.ok) throw new Error('Firebase GET falló: ' + res.status);
   return await res.json();
 }
 async function fbSet(key, value){
   const token = await getAuthToken();
-  const url = `${FIREBASE_URL}/${key}.json` + (token ? `?auth=${token}` : '');
+  const url = `${FIREBASE_URL}/${fbRuta(key)}.json` + (token ? `?auth=${token}` : '');
   const res = await fetch(url, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -4404,25 +4407,196 @@ function armarXls(datos){
   return new Uint8Array(XLSX.CFB.write(cfb, { type: 'array' }));
 }
 
-// Lee cualquier Excel/CSV; si es un .xls con problemas, prueba rescatarlo antes de rendirse.
+/* Lector propio de .xls (último recurso). Recorre los registros de la parte de datos y saca
+   las celdas (textos, números y resultados de fórmulas) de cada hoja, sin usar el índice,
+   los nombres ni los filtros del archivo, que es donde fallan los .xls mal armados. */
+function leerXlsCrudo(datos){
+  const d = datos instanceof Uint8Array ? datos : new Uint8Array(datos);
+  const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
+  const dec1252 = (() => { try{ return new TextDecoder('windows-1252'); }catch(e){ return new TextDecoder('latin1'); } })();
+  const dec16 = new TextDecoder('utf-16le');
+
+  // Registros: [tipo, inicio de los datos, largo]
+  const regs = [];
+  for(let o = 0; o + 4 <= d.length; ){
+    const tipo = dv.getUint16(o, true), largo = dv.getUint16(o + 2, true);
+    if(o + 4 + largo > d.length) break;
+    regs.push([tipo, o + 4, largo]);
+    o += 4 + largo;
+  }
+
+  let biff8 = true;
+  const sst = [];
+  const hojas = [];      // { nombre, filas: Map(fila -> Map(col -> valor)) }
+  const nombres = [];    // de los BoundSheet, en orden
+  let actual = null, formulaPendiente = null, nSub = 0;
+  const pila = []; // BOF/EOF anidados (ej. un gráfico dentro de una hoja)
+
+  const rk = v => {
+    let n;
+    if(v & 0x02){ n = v >> 2; }
+    else{ const b = new DataView(new ArrayBuffer(8)); b.setUint32(4, v & 0xFFFFFFFC, true); b.setUint32(0, 0, true); n = b.getFloat64(0, true); }
+    return (v & 0x01) ? n / 100 : n;
+  };
+  const poner = (fila, col, valor) => {
+    if(!actual) return;
+    if(!actual.filas.has(fila)) actual.filas.set(fila, new Map());
+    actual.filas.get(fila).set(col, valor);
+  };
+  // Texto con largo de 16 bits y marca de 1/2 bytes por letra (LABEL, STRING en BIFF8)
+  const texto16 = (o, fin) => {
+    const cch = dv.getUint16(o, true); o += 2;
+    if(!biff8) return dec1252.decode(d.subarray(o, Math.min(o + cch, fin)));
+    const flags = d[o]; o += 1;
+    if(flags & 0x08) o += 2;   // formato enriquecido
+    if(flags & 0x04) o += 4;   // datos extra
+    return (flags & 0x01) ? dec16.decode(d.subarray(o, Math.min(o + cch * 2, fin))) : dec1252.decode(d.subarray(o, Math.min(o + cch, fin)));
+  };
+
+  // Tabla de textos compartidos (SST), que puede seguir en registros CONTINUE
+  const leerSST = (k) => {
+    const trozos = [d.subarray(regs[k][1], regs[k][1] + regs[k][2])];
+    for(let j = k + 1; j < regs.length && regs[j][0] === 0x003C; j++) trozos.push(d.subarray(regs[j][1], regs[j][1] + regs[j][2]));
+    let t = 0, p = 8;
+    const quedan = () => trozos[t].length - p;
+    const sig = () => { t++; p = 0; return t < trozos.length; };
+    const byte = () => { while(t < trozos.length && quedan() <= 0) if(!sig()) return 0; return t < trozos.length ? trozos[t][p++] : 0; };
+    const u16 = () => byte() | (byte() << 8);
+    const u32 = () => (u16() + u16() * 65536);
+    const saltear = n => { while(n > 0 && t < trozos.length){ const q = Math.min(n, quedan()); p += q; n -= q; if(n > 0 && !sig()) break; } };
+    const total = trozos[0].length >= 8 ? new DataView(trozos[0].buffer, trozos[0].byteOffset).getUint32(4, true) : 0;
+    for(let s = 0; s < total && t < trozos.length; s++){
+      if(quedan() <= 0 && !sig()) break;
+      const cch = u16();
+      let flags = byte();
+      const rico = flags & 0x08 ? u16() : 0;
+      const ext = flags & 0x04 ? u32() : 0;
+      let txt = '', faltan = cch;
+      while(faltan > 0 && t < trozos.length){
+        if(quedan() <= 0){ if(!sig()) break; flags = trozos[t][p++]; } // al pasar a un CONTINUE, viene de nuevo la marca 1/2 bytes
+        const ancho = (flags & 0x01) ? 2 : 1;
+        const n = Math.min(faltan, Math.floor(quedan() / ancho));
+        if(n <= 0){ p = trozos[t].length; continue; }
+        const trozo = trozos[t].subarray(p, p + n * ancho);
+        txt += ancho === 2 ? dec16.decode(trozo) : dec1252.decode(trozo);
+        p += n * ancho; faltan -= n;
+      }
+      saltear(rico * 4 + ext);
+      sst.push(txt);
+    }
+  };
+
+  for(let k = 0; k < regs.length; k++){
+    const [tipo, o, largo] = regs[k];
+    const fin = o + largo;
+    switch(tipo){
+      case 0x0809: { // BOF: empieza el libro o una hoja
+        if(largo >= 4){
+          biff8 = dv.getUint16(o, true) === 0x0600;
+          const dt = dv.getUint16(o + 2, true);
+          pila.push(actual);
+          if(dt === 0x0005){ actual = null; }
+          else{
+            const nombre = nombres[nSub] || ('Hoja' + (nSub + 1));
+            nSub++;
+            if(dt === 0x0010){ actual = { nombre, filas: new Map() }; hojas.push(actual); }
+            else actual = null; // gráficos, macros: no tienen celdas
+          }
+        }
+        break;
+      }
+      case 0x000A: actual = pila.length ? pila.pop() : null; break; // EOF: vuelve a lo que había antes del BOF
+      case 0x0085: { // BoundSheet: nombre de la hoja
+        if(largo < 8) break;
+        const cch = d[o + 6];
+        let nombre;
+        if(biff8){ const f = d[o + 7]; nombre = (f & 0x01) ? dec16.decode(d.subarray(o + 8, o + 8 + cch * 2)) : dec1252.decode(d.subarray(o + 8, o + 8 + cch)); }
+        else nombre = dec1252.decode(d.subarray(o + 7, o + 7 + cch));
+        nombres.push(nombre.trim() || ('Hoja' + (nombres.length + 1)));
+        break;
+      }
+      case 0x00FC: try{ leerSST(k); }catch(e){ /* si la tabla viene rota, se usa lo que se pudo leer */ } break;
+      case 0x00FD: if(largo >= 10){ const i = dv.getUint32(o + 6, true); poner(dv.getUint16(o, true), dv.getUint16(o + 2, true), sst[i] ?? ''); } break;
+      case 0x0203: if(largo >= 14) poner(dv.getUint16(o, true), dv.getUint16(o + 2, true), dv.getFloat64(o + 6, true)); break;
+      case 0x027E: if(largo >= 10) poner(dv.getUint16(o, true), dv.getUint16(o + 2, true), rk(dv.getUint32(o + 6, true))); break;
+      case 0x00BD: { // MULRK: varios números seguidos en la misma fila
+        if(largo < 6) break;
+        const fila = dv.getUint16(o, true), col0 = dv.getUint16(o + 2, true);
+        const n = Math.floor((largo - 6) / 6);
+        for(let i = 0; i < n; i++) poner(fila, col0 + i, rk(dv.getUint32(o + 4 + i * 6 + 2, true)));
+        break;
+      }
+      case 0x0204: case 0x00D6: if(largo >= 8) try{ poner(dv.getUint16(o, true), dv.getUint16(o + 2, true), texto16(o + 6, fin)); }catch(e){} break;
+      case 0x0205: if(largo >= 8 && !d[o + 7]) poner(dv.getUint16(o, true), dv.getUint16(o + 2, true), !!d[o + 6]); break;
+      case 0x0006: { // FORMULA: se usa el último resultado guardado
+        if(largo < 14) break;
+        const fila = dv.getUint16(o, true), col = dv.getUint16(o + 2, true);
+        if(dv.getUint16(o + 12, true) === 0xFFFF){
+          const t = d[o + 6];
+          if(t === 0) formulaPendiente = [fila, col];        // el texto viene en el próximo STRING
+          else if(t === 1) poner(fila, col, !!d[o + 8]);
+        } else poner(fila, col, dv.getFloat64(o + 6, true));
+        break;
+      }
+      case 0x0207: if(formulaPendiente){ try{ poner(formulaPendiente[0], formulaPendiente[1], texto16(o, fin)); }catch(e){} formulaPendiente = null; } break;
+    }
+  }
+
+  const wb = XLSX.utils.book_new();
+  const usados = new Set();
+  for(const h of hojas){
+    if(!h.filas.size) continue;
+    const maxFila = Math.max(...h.filas.keys());
+    const aoa = [];
+    for(let f = 0; f <= maxFila; f++){
+      const m = h.filas.get(f);
+      const fila = [];
+      if(m) for(const [c, v] of m) fila[c] = v;
+      for(let c = 0; c < fila.length; c++) if(fila[c] === undefined) fila[c] = '';
+      aoa.push(fila);
+    }
+    let nombre = String(h.nombre).replace(/[\\\/\?\*\[\]:]/g, ' ').slice(0, 31) || 'Hoja';
+    while(usados.has(nombre)) nombre = nombre.slice(0, 28) + '_' + usados.size;
+    usados.add(nombre);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), nombre);
+  }
+  return wb.SheetNames.length ? wb : null;
+}
+
+// ¿El libro tiene alguna hoja con al menos una celda con algo?
+function libroTieneDatos(wb){
+  return !!wb && (wb.SheetNames || []).some(n => {
+    const sh = wb.Sheets && wb.Sheets[n];
+    return sh && XLSX.utils.sheet_to_json(sh, {header:1, defval:''}).some(r => r.some(v => String(v ?? '').trim() !== ''));
+  });
+}
+
+// Lee cualquier Excel/CSV. Si es un .xls con problemas (índice roto, filtros o nombres que
+// apuntan a hojas que no existen, hojas que salen vacías...), prueba en orden:
+// 1) lector normal; 2) rescate del contenedor; 3) rescate sin nombres/filtros;
+// 4) lector propio de celdas. Devuelve el primero que traiga datos.
 function leerLibroExcel(data){
+  const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+  let primerError = null, sinDatos = null;
   try{
-    return XLSX.read(data, {type:'array'});
-  }catch(err){
-    const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
-    let datos = null;
-    try{ datos = hojaDatosXls(u8); }catch(e){ console.warn('Rescate de .xls falló', e); }
-    if(!datos) throw err;
-    const intentos = [() => armarXls(datos), () => armarXls(sinNombresXls(datos))];
+    const wb = XLSX.read(u8, {type:'array'});
+    if(libroTieneDatos(wb)) return wb;
+    sinDatos = wb;
+  }catch(err){ primerError = err; }
+  let datos = null;
+  try{ datos = hojaDatosXls(u8); }catch(e){ console.warn('No se pudo sacar la parte de datos del .xls', e); }
+  if(datos){
+    const intentos = [() => XLSX.read(armarXls(datos), {type:'array'}), () => XLSX.read(armarXls(sinNombresXls(datos)), {type:'array'}), () => leerXlsCrudo(datos)];
     for(const intento of intentos){
       try{
-        const wb = XLSX.read(intento(), {type:'array'});
-        console.warn('El .xls venía con problemas; se leyó con el rescate.', err);
-        return wb;
+        const wb = intento();
+        if(libroTieneDatos(wb)){ console.warn('El .xls venía con problemas; se leyó con un rescate.', primerError || 'hojas vacías'); return wb; }
+        if(wb && !sinDatos) sinDatos = wb;
       }catch(e){ /* sigue con el próximo */ }
     }
-    throw err;
   }
+  if(sinDatos) return sinDatos;
+  throw primerError || new Error('No se pudo leer el archivo');
 }
 
 async function cargarArchivoEnContexto(file){
